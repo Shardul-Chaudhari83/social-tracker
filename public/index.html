@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Email to Action Tracker - AI Multi-Agent Demo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-content">
+        <div class="header-top-row">
+          <div class="badge">Multi-Agent Workflow Demo</div>
+          <div class="mcp-status-badge" id="mcpBadge">
+            <span class="mcp-dot"></span> <span id="mcpText">Connecting MCP Server...</span>
+          </div>
+        </div>
+        <h1>Email to Action Tracker</h1>
+        <p class="subtitle">Transform unstructured, messy email threads into verified action items with real-time QA self-checking loops.</p>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top Section: Email Input -->
+      <section class="card input-section">
+        <div class="card-header">
+          <h2>1. Raw Email Input</h2>
+          <div class="sample-actions">
+            <button type="button" class="btn-mcp-fetch" id="btnFetchMcp">
+              <span>📡 Fetch Real Emails (MCP)</span>
+            </button>
+            <span class="divider">|</span>
+            <span>Load Sample:</span>
+            <button type="button" class="btn-sample" id="btn-sample-1">Messy Sprint</button>
+            <button type="button" class="btn-sample" id="btn-sample-2">Post-Launch</button>
+          </div>
+        </div>
+        <!-- Real Email Selector Drawer (Hidden by default until clicked) -->
+        <div class="mcp-email-drawer hidden" id="mcpDrawer">
+          <div class="drawer-header">
+            <h4>Select Real Email from Connected MCP Server Inbox:</h4>
+            <button type="button" class="btn-close-drawer" id="btnCloseDrawer">✕</button>
+          </div>
+          <div class="email-list" id="mcpEmailList">
+            <div class="loading-spinner">Fetching emails via MCP Protocol...</div>
+          </div>
+        </div>
+
+        <div class="card-body">
+
+          <textarea id="emailInput" placeholder="Paste your messy email or email thread text here..." rows="8"></textarea>
+          <div class="action-bar">
+            <button type="button" id="btnProcess" class="btn-primary">
+              <span class="btn-icon">⚡</span> Process Email with Agent Team
+            </button>
+            <span class="status-indicator" id="statusIndicator">Ready</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Middle Section: Live Agent Activity Log -->
+      <section class="card activity-section">
+        <div class="card-header">
+          <h2>2. Agent Activity & QA Self-Checking Loop Log</h2>
+          <div class="log-controls">
+            <span class="live-dot pulse"></span>
+            <span class="live-label">LIVE STREAM</span>
+            <button type="button" id="btnClearLog" class="btn-secondary">Clear Log</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <!-- Agent Legend -->
+          <div class="agent-legend">
+            <span class="agent-tag tag-extraction">Extraction Agent</span>
+            <span class="agent-tag tag-assignment">Assignment Sub-Agent</span>
+            <span class="agent-tag tag-qa">QA Sub-Agent</span>
+            <span class="agent-tag tag-report">Report Agent</span>
+          </div>
+          <!-- Log Terminal Container -->
+          <div class="log-container" id="logContainer">
+            <div class="log-placeholder">
+              <p>Click <strong>"Process Email with Agent Team"</strong> to start the pipeline and watch the agents work live.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Bottom Section: Final Action Items Tracker Table -->
+      <section class="card output-section">
+        <div class="card-header">
+          <h2>3. Final Action Item Tracker</h2>
+          <span class="item-count-badge" id="itemCountBadge">0 Items</span>
+        </div>
+        <div class="card-body">
+          <div class="table-responsive">
+            <table class="tracker-table" id="trackerTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Action Item</th>
+                  <th>Owner</th>
+                  <th>Deadline</th>
+                  <th>Verification Status</th>
+                </tr>
+              </thead>
+              <tbody id="tableBody">
+                <tr class="empty-row">
+                  <td colspan="5">No action items processed yet. Submit an email above to view tracker results.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <p>Simulating a 4-agent team: Extraction, Assignment, QA (Self-Checking Loop up to 3x), and Report Agent.</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
