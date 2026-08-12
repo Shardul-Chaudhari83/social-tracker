@@ -1,5 +1,9 @@
 const express = require('express');
 const path = require('path');
+const { fork } = require('child_process');
+
+// Spawn background MCP Email Server on port 3001
+fork(path.join(__dirname, 'mcp-email-server.js'));
 
 const app = express();
 const PORT = process.env.PORT || 3000;
