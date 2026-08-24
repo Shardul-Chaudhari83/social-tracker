@@ -4,9 +4,11 @@
   "description": "Small end-to-end demo app: Email to Action Tracker with AI multi-agent retry loop",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node scripts/test_phase1.js"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "imap-simple": "^5.1.0"

@@ -81,39 +81,56 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
         <div class="mcp-subject">📧 ${escapeHtml(item.subject)}</div>
       `;
-      card.addEventListener('click', () => loadMcpEmailContent(item.id));
+      card.addEventListener('click', () => loadMcpEmailContent(item.id, true));
       mcpEmailList.appendChild(card);
     });
   }
 
 
-  async function loadMcpEmailContent(emailId) {
+  async function loadMcpEmailContent(emailId, autoRun = false) {
     try {
+      statusIndicator.textContent = 'Fetching email content...';
       const res = await fetch(`/api/mcp/emails/${emailId}`);
       const data = await res.json();
 
       if (data.email && data.email.body) {
         emailInput.value = data.email.body;
         mcpDrawer.classList.add('hidden');
-        appendLog('System', 'mcp-event', `Loaded real email via MCP Server ID: [${emailId}]`);
+        appendLog('System', 'mcp-event', `Loaded real email via MCP Server ID: [${emailId}] Subject: "${data.email.subject || 'Real Email'}"`);
+        statusIndicator.textContent = 'Real Email Loaded';
+        if (autoRun) {
+          startWorkflow();
+        }
       }
     } catch (err) {
       alert('Error fetching full email content from MCP server: ' + err.message);
+      statusIndicator.textContent = 'Error';
     }
   }
 
-  // Fetch samples from backend
+  // Auto-fetch latest real email from connected MCP Server on load
+  async function loadInitialRealEmail() {
+    try {
+      statusIndicator.textContent = 'Loading live email...';
+      const res = await fetch('/api/mcp/emails');
+      const data = await res.json();
+      if (data.emails && data.emails.length > 0) {
+        // Load content of first real email from inbox
+        const firstId = data.emails[0].id;
+        await loadMcpEmailContent(firstId, false);
+      }
+    } catch (err) {
+      console.log('Falling back to static samples:', err.message);
+      statusIndicator.textContent = 'Ready';
+    }
+  }
 
-
-  // Fetch samples from backend
+  // Load samples from backend as fallback
   fetch('/api/samples')
     .then(res => res.json())
     .then(data => {
       samples = data;
-      // Preload sample 1 by default
-      if (samples.messy_sprint) {
-        emailInput.value = samples.messy_sprint;
-      }
+      loadInitialRealEmail();
     })
     .catch(err => console.error('Failed to load samples:', err));
 

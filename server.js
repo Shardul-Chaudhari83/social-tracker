@@ -2,8 +2,11 @@ const express = require('express');
 const path = require('path');
 const { fork } = require('child_process');
 
-// Spawn background MCP Email Server on port 3001
-fork(path.join(__dirname, 'mcp-email-server.js'));
+const { initDatabase } = require('./src/db/database');
+const reminderRoutes = require('./src/routes/reminderRoutes');
+
+// Initialize Persistence Layer (SQLite with WAL mode)
+initDatabase();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,40 +14,39 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Sample emails for instant live demo testing
+// Mount Automated Reminder Management System Routes
+app.use('/api/reminders', reminderRoutes);
+
+// Sample emails for instant live demo testing (Real-world project & account sync samples)
 const SAMPLE_EMAILS = {
-  messy_sprint: `From: Sarah Jenkins <sarah.j@techcorp.com>
-To: Alex Rivera <alex.r@techcorp.com>, David Chen <david.c@techcorp.com>, Maria Santos <maria.s@techcorp.com>
-Subject: Re: Sprint Sync & Q3 Deliverables Urgent Updates
+  messy_sprint: `From: Rahul Sharma <thenorthremembers179@gmail.com>
+To: Lead Engineer <lead@techcorp.com>, DevOps Team <ops@techcorp.com>
+Subject: Re: Production Release & Database Audit Sprint Tasks
 
 Hey team,
 
-Thanks for joining the call earlier. I wanted to summarize what we talked about since things got a bit chaotic:
+Following up on our project status review today:
 
-First off, Alex - can you update the API authentication endpoint documentation by EOD Friday? The client integration team is waiting on this.
+1. Rahul Sharma - please complete the user data migration script and verify database integrity by Friday 5:00 PM.
+2. Ops Team - please update the SSL security certificates on the production load balancer by tomorrow 3:00 PM.
+3. Design Lead - submit the updated UI wireframes for customer review before Thursday at 2:00 PM.
+4. Also, someone needs to audit the server access logs for last month ASAP.
+5. Please verify the API rate limiter configurations before the client demo.
 
-Also David, we noticed high latency on the user analytics query. We need you to optimize the database query index by next Tuesday. 
+Best regards,
+Rahul Sharma`,
 
-Maria mentioned she will handle creating the initial Figma wireframes for the new settings dashboard. Let's make sure that's ready before the product review on Thursday at 2 PM.
+  vague_launch: `From: Operations Team <ops@enterprise-system.org>
+To: thenorthremembers179@gmail.com
+Subject: Post-Launch Operational Deliverables & Security Audit
 
-Wait, who is updating the deployment pipeline script? We spoke about fixing the Docker build step... someone needs to look into that ASAP.
+Team - following up on system updates:
 
-Also, someone should review the security audit logs for last month.
-
-Thanks,
-Sarah`,
-
-  vague_launch: `From: Marcus Vance <marcus@startup.io>
-To: Team All <team@startup.io>
-Subject: Post-Launch Action Items
-
-Team - great launch yesterday! Quick follow ups:
-
-1. Sarah, please draft the press release release notes by tomorrow 5 PM.
-2. Alex: set up the monitoring alerts for S3 bucket storage usage.
-3. We need to prepare the financial summary report for investors.
-4. Elena - update the customer support FAQ section by Friday.
-5. Can someone check why the automated welcome emails are landing in spam?`
+- Rahul Sharma: prepare the quarterly performance analysis report by tomorrow 5:00 PM.
+- Infrastructure Team: set up real-time monitoring alerts for cloud storage usage within 24 hours.
+- QA Lead: execute end-to-end regression tests for the authentication API by Friday 12:00 PM.
+- Elena: update the user onboarding documentation section by Friday.
+- Can someone verify why automated system notifications are landing in spam?`
 };
 
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'http://localhost:3001/mcp';
@@ -327,55 +329,83 @@ function delay(ms) {
 
 // Extraction logic heuristic parser
 function parseRawEmailIntoTasks(text) {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
   const tasks = [];
 
-  // Match common task patterns or line items
-  const sentencePattern = /(?:can you|please|need you to|will handle|should|needs to|action item|1\.|2\.|3\.|4\.|5\.|first off|also)/i;
-  
-  // Extract senders and recipients from headers if present
-  let senders = [];
-  const fromMatch = text.match(/From:\s*([^\n<]+)/i);
-  if (fromMatch) senders.push(fromMatch[1].trim());
+  // Extract default owner from headers if present
+  let defaultOwner = null;
+  const fromMatch = text.match(/From:\s*([^<\n]+)/i);
+  if (fromMatch) {
+    const rawSender = fromMatch[1].trim();
+    if (rawSender && !rawSender.includes('@')) {
+      defaultOwner = rawSender;
+    }
+  }
 
-  lines.forEach(line => {
-    if (line.startsWith('From:') || line.startsWith('To:') || line.startsWith('Subject:') || line.startsWith('Hey') || line.startsWith('Thanks')) {
+  // Remove email header blocks before sentence extraction
+  const cleanBody = text
+    .replace(/From:[^\n]+\n?/gi, '')
+    .replace(/To:[^\n]+\n?/gi, '')
+    .replace(/Subject:[^\n]+\n?/gi, '')
+    .replace(/Date:[^\n]+\n?/gi, '')
+    .trim();
+
+  // Split body into sentences or bullet points
+  const rawSegments = cleanBody
+    .split(/(?:\r?\n)+|(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 10);
+
+  const sentencePattern = /(?:can you|please|need you to|will handle|should|needs to|action item|1\.|2\.|3\.|4\.|5\.|first off|also|update|fix|patch|prepare|review|check|verify|sign in|access|security|member|group|alert)/i;
+
+  rawSegments.forEach(segment => {
+    // Ignore boilerplate footers / common privacy notices
+    if (segment.includes("Privacy Policy") || segment.includes("Terms of Service") || segment.includes("stop using Sign in with Google")) {
       return;
     }
 
-    if (sentencePattern.test(line) || line.length > 20) {
-      // Parse task details
+    if (sentencePattern.test(segment) || segment.length > 20) {
       let initialOwner = null;
       let initialDeadline = null;
-      let cleanTask = line.replace(/^(?:\d+\.\s*|-|\*)/, '').trim();
 
-      // Check explicit owner mentions
-      if (/\bAlex\b/i.test(line)) initialOwner = 'Alex Rivera';
-      else if (/\bDavid\b/i.test(line)) initialOwner = 'David Chen';
-      else if (/\bMaria\b/i.test(line)) initialOwner = 'Maria Santos';
-      else if (/\bSarah\b/i.test(line)) initialOwner = 'Sarah Jenkins';
-      else if (/\bElena\b/i.test(line)) initialOwner = 'Elena Rostova';
+      // Clean segment of bullet points/numbers
+      let cleanTask = segment.replace(/^(?:\d+\.\s*|-|\*)/, '').trim();
 
-      // Check explicit deadlines
-      if (/EOD Friday|by Friday/i.test(line)) initialDeadline = 'Friday 5:00 PM';
-      else if (/next Tuesday/i.test(line)) initialDeadline = 'Next Tuesday 12:00 PM';
-      else if (/Thursday at 2 PM|Thursday/i.test(line)) initialDeadline = 'Thursday 2:00 PM';
-      else if (/tomorrow 5 PM|tomorrow/i.test(line)) initialDeadline = 'Tomorrow 5:00 PM';
+      // Ensure concise task summary (cap at 140 chars for clean display)
+      if (cleanTask.length > 140) {
+        cleanTask = cleanTask.slice(0, 137) + '...';
+      }
+
+      // Check explicit owner mentions dynamically (e.g. "Rahul Sharma - ", "Ops Team:", "@John")
+      const namePrefixMatch = segment.match(/^(?:@|\b)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*[:,\-]/);
+      const ignoredWords = ['Hi', 'Hey', 'Dear', 'Thanks', 'Team', 'Please', 'Also', 'If', 'This', 'You', 'Wait', 'First'];
+      if (namePrefixMatch && !ignoredWords.includes(namePrefixMatch[1])) {
+        initialOwner = namePrefixMatch[1];
+      }
+
+      // Check explicit deadlines dynamically
+      if (/EOD Friday|by Friday/i.test(segment)) initialDeadline = 'Friday 5:00 PM';
+      else if (/next Tuesday/i.test(segment)) initialDeadline = 'Next Tuesday 12:00 PM';
+      else if (/Thursday at 2 PM|Thursday/i.test(segment)) initialDeadline = 'Thursday 2:00 PM';
+      else if (/tomorrow 5 PM|tomorrow at 3 PM|tomorrow/i.test(segment)) initialDeadline = 'Tomorrow 5:00 PM';
+      else if (/tonight|by midnight/i.test(segment)) initialDeadline = 'Tonight 11:59 PM';
+      else if (/ASAP|immediately|urgent/i.test(segment)) initialDeadline = 'Within 24 Hours';
 
       tasks.push({
-        rawSnippet: line,
+        rawSnippet: segment.length > 100 ? segment.slice(0, 97) + '...' : segment,
         initialTask: cleanTask,
-        initialOwner: initialOwner,
+        initialOwner: initialOwner || defaultOwner,
         initialDeadline: initialDeadline
       });
     }
   });
 
   if (tasks.length === 0) {
+    let summarySnippet = cleanBody.slice(0, 120);
+    if (cleanBody.length > 120) summarySnippet += '...';
     tasks.push({
-      rawSnippet: text.slice(0, 80),
-      initialTask: 'Review raw email content and extract action steps',
-      initialOwner: null,
+      rawSnippet: summarySnippet,
+      initialTask: summarySnippet || 'Review email notification details',
+      initialOwner: defaultOwner,
       initialDeadline: null
     });
   }
@@ -389,13 +419,25 @@ function refineAssignment(item, candidate, fullEmailText) {
   let owner = item.owner;
   let deadline = item.deadline;
 
+  // Extract fallback sender/recipient from full email text
+  let fallbackOwner = null;
+  const fromMatch = fullEmailText.match(/From:\s*([^<\n]+)/i);
+  if (fromMatch) {
+    const raw = fromMatch[1].trim();
+    if (raw && !raw.includes('@')) fallbackOwner = raw;
+  }
+
   // On Attempt 1: Keep initial parsed or infer owner if obvious
   if (item.attempts === 1) {
     if (!owner) {
-      if (/docker|deployment|pipeline|build/i.test(task)) {
-        owner = 'Alex Rivera (DevOps)';
-      } else if (/database|analytics|latency|query/i.test(task)) {
-        owner = 'David Chen (Backend)';
+      if (/ssl|security|cert|auth|load balancer/i.test(task)) {
+        owner = 'DevOps / Infrastructure Team';
+      } else if (/database|migration|query|data/i.test(task)) {
+        owner = 'Backend / Database Engineer';
+      } else if (/ui|wireframe|figma|design/i.test(task)) {
+        owner = 'UI/UX Design Lead';
+      } else if (fallbackOwner) {
+        owner = fallbackOwner;
       }
     }
   }
@@ -403,19 +445,19 @@ function refineAssignment(item, candidate, fullEmailText) {
   // On Attempt 2: If deadline is missing, infer from relative keywords or standard SLA
   if (item.attempts === 2) {
     if (!deadline) {
-      if (/ASAP|urgently|high latency|security|spam/i.test(fullEmailText + task)) {
+      if (/ASAP|urgently|high latency|security|spam|urgent|escalation|alert/i.test(fullEmailText + task)) {
         deadline = 'Within 24 Hours (Urgent SLA)';
       } else {
         deadline = 'End of Week (Friday 5:00 PM)';
       }
     }
     if (!owner) {
-      if (/security|audit/i.test(task)) {
-        owner = 'Sarah Jenkins (SecOps)';
-      } else if (/welcome email|spam/i.test(task)) {
-        owner = 'Alex Rivera (Infrastructure)';
-      } else if (/financial|investor/i.test(task)) {
-        owner = 'Marcus Vance (Finance Lead)';
+      if (/security|audit|access log/i.test(task)) {
+        owner = 'Security Audit Lead';
+      } else if (/test|qa|regression/i.test(task)) {
+        owner = 'QA Automation Lead';
+      } else if (fallbackOwner) {
+        owner = fallbackOwner;
       }
     }
   }
@@ -423,10 +465,10 @@ function refineAssignment(item, candidate, fullEmailText) {
   // On Attempt 3: Provide best effort fallback
   if (item.attempts === 3) {
     if (!owner) {
-      owner = 'Unassigned (Requires Lead Triage)';
+      owner = fallbackOwner || 'Unassigned (Requires Lead Triage)';
     }
     if (!deadline) {
-      deadline = 'TBD (Needs Owner Input)';
+      deadline = 'Within 3 Business Days (Standard SLA)';
     }
   }
 
@@ -458,6 +500,15 @@ function evaluateQualityCheck(item) {
   return { passed: true };
 }
 
-app.listen(PORT, () => {
-  console.log(`Email to Action Tracker server running on http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  // Spawn background MCP Email Server on port 3001
+  fork(path.join(__dirname, 'mcp-email-server.js'));
+
+  app.listen(PORT, () => {
+    console.log(`Email to Action Tracker server running on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;
+
+
