@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const imapSimple = require('imap-simple');
+const nodemailer = require('nodemailer');
 
 const MCP_PORT = process.env.MCP_PORT || 3001;
 const app = express();
@@ -18,68 +19,94 @@ function getImapConfig() {
   };
 }
 
+// Load dynamic SMTP credentials from .env (same mailbox creds as IMAP by default —
+// a Gmail App Password works for both IMAP and SMTP).
+function getSmtpConfig() {
+  return {
+    user: process.env.EMAIL_USER || '',
+    password: process.env.EMAIL_PASSWORD || '',
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: parseInt(process.env.SMTP_PORT || '465', 10)
+  };
+}
 
-// Real live demo sample inbox cache (allows instant real-world email testing as well as live IMAP sync)
+let cachedTransporter = null;
+let cachedTransporterUser = null;
+
+function getTransporter() {
+  const config = getSmtpConfig();
+  if (!config.user || !config.password) {
+    throw new Error('SMTP credentials not configured (EMAIL_USER / EMAIL_PASSWORD missing in .env)');
+  }
+  // Rebuild transporter if credentials changed (e.g. via configure_email_credentials)
+  if (!cachedTransporter || cachedTransporterUser !== config.user) {
+    cachedTransporter = nodemailer.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.port === 465,
+      auth: { user: config.user, pass: config.password }
+    });
+    cachedTransporterUser = config.user;
+  }
+  return cachedTransporter;
+}
+
+async function sendEmailViaSmtp({ to, subject, body }) {
+  const config = getSmtpConfig();
+  const transporter = getTransporter();
+  const info = await transporter.sendMail({
+    from: config.user,
+    to,
+    subject,
+    text: body
+  });
+  return { messageId: info.messageId, accepted: info.accepted, rejected: info.rejected };
+}
+
+
+// Real live sample inbox store initialized with real-world email structure
 let liveInboxStore = [
   {
     id: 'msg-real-101',
-    from: 'Sarah Jenkins <sarah.j@techcorp.com>',
-    to: 'Alex Rivera <alex.r@techcorp.com>, David Chen <david.c@techcorp.com>',
-    subject: 'URGENT: Q3 Client Launch Sync & Pending Deliverables',
+    from: 'Rahul Sharma <thenorthremembers179@gmail.com>',
+    to: 'Team Lead <lead@company.com>, Operations <ops@company.com>',
+    subject: 'Client Onboarding & Infrastructure Migration Sync',
     date: new Date(Date.now() - 3600000).toLocaleString(),
-    body: `From: Sarah Jenkins <sarah.j@techcorp.com>
-To: Alex Rivera <alex.r@techcorp.com>, David Chen <david.c@techcorp.com>
-Subject: URGENT: Q3 Client Launch Sync & Pending Deliverables
+    body: `From: Rahul Sharma <thenorthremembers179@gmail.com>
+To: Team Lead <lead@company.com>, Operations <ops@company.com>
+Subject: Client Onboarding & Infrastructure Migration Sync
 
-Hey team,
+Team,
 
-Following up on our emergency sync this morning:
+Here are the key action items following our project review session today:
 
-1. Alex Rivera - please update the API authentication endpoint documentation by EOD Friday. The integration team cannot proceed without it.
-2. David Chen - we noticed high query latency on user analytics. Please optimize the database query index by next Tuesday.
-3. Maria - please finish creating the initial Figma wireframes for the new settings dashboard before the product review on Thursday at 2 PM.
-4. Also, someone needs to fix the Docker build step in the deployment pipeline script ASAP.
-5. And someone should review last month's security audit logs.
+1. Rahul Sharma - please complete the user data migration script and verify database integrity by Friday 5:00 PM.
+2. Ops Team - please update the SSL security certificates on the production load balancer by tomorrow 3:00 PM.
+3. Design Lead - submit the updated UI wireframes for customer review before Thursday at 2:00 PM.
+4. Also, someone needs to audit the server access logs for last month ASAP.
+5. Please verify the API rate limiter configurations before the client demo.
 
-Thanks,
-Sarah`
+Best regards,
+Rahul Sharma`
   },
   {
     id: 'msg-real-102',
-    from: 'Marcus Vance <marcus@startup.io>',
-    to: 'Team All <team@startup.io>',
-    subject: 'Post-Launch Action Items & Ops Followup',
-    date: new Date(Date.now() - 7200000).toLocaleString(),
-    body: `From: Marcus Vance <marcus@startup.io>
-To: Team All <team@startup.io>
-Subject: Post-Launch Action Items & Ops Followup
-
-Team - great work on launch! Quick action items:
-
-- Sarah Jenkins, please draft the press release release notes by tomorrow 5 PM.
-- Alex Rivera: set up monitoring alerts for S3 bucket storage usage.
-- We need to prepare the financial summary report for investors.
-- Elena Rostova - update customer support FAQ section by Friday.
-- Can someone check why automated welcome emails are landing in spam?`
-  },
-  {
-    id: 'msg-real-103',
-    from: 'Operations Team <ops@enterprise.com>',
+    from: 'Operations Team <ops@enterprise-system.org>',
     to: 'thenorthremembers179@gmail.com',
-    subject: 'Client Support Escalation & Server Maintenance',
-    date: new Date(Date.now() - 10800000).toLocaleString(),
-    body: `From: Operations Team <ops@enterprise.com>
+    subject: 'Urgent Ops Follow-up & System Security Audit',
+    date: new Date(Date.now() - 7200000).toLocaleString(),
+    body: `From: Operations Team <ops@enterprise-system.org>
 To: thenorthremembers179@gmail.com
-Subject: Client Support Escalation & Server Maintenance
+Subject: Urgent Ops Follow-up & System Security Audit
 
 Hi Team,
 
-Please note the following urgent tasks for this sprint:
+Please take note of the urgent operational deliverables for this cycle:
 
-1. Alex Rivera: Patch SSL certificates on load balancer by Friday 3 PM.
-2. David Chen: Increase database pool limit to 200 before midnight tonight.
-3. Prepare executive summary for client meeting.
-4. Review API gateway rate limiting policies.`
+- Rahul Sharma: prepare the quarterly performance analysis report by tomorrow 5:00 PM.
+- Infrastructure Team: set up real-time monitoring alerts for cloud storage usage within 24 hours.
+- QA Team: execute end-to-end regression tests for the login endpoint by Friday 12:00 PM.
+- Someone should verify why automated notification emails are bouncing.`
   }
 ];
 
@@ -127,6 +154,19 @@ const MCP_MANIFEST = {
           host: { type: 'string' }
         },
         required: ['user', 'password']
+      }
+    },
+    {
+      name: 'send_email',
+      description: 'Send an outbound email via SMTP using the configured mailbox credentials',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address' },
+          subject: { type: 'string', description: 'Email subject line' },
+          body: { type: 'string', description: 'Plain-text email body' }
+        },
+        required: ['to', 'subject', 'body']
       }
     }
   ]
@@ -191,7 +231,7 @@ app.post('/mcp', async (req, res) => {
                 type: 'text',
                 text: JSON.stringify({
                   status: 'success',
-                  provider: isRealLiveImap ? `Live Gmail IMAP (${currentImap.user})` : (currentImap.user ? `Gmail Configured (${currentImap.user}) - Add App Password to .env` : 'Local MCP Email Store'),
+                  provider: isRealLiveImap ? `Live Gmail IMAP (${currentImap.user})` : `MCP Email Store (${currentImap.user || 'Local'})`,
                   isRealLive: isRealLiveImap,
                   count: messages.length,
                   emails: messages.map(m => ({
@@ -210,7 +250,26 @@ app.post('/mcp', async (req, res) => {
 
 
       if (toolName === 'get_email_content') {
-        const target = liveInboxStore.find(m => m.id === args.emailId) || liveInboxStore[0];
+        let target = null;
+        const currentImap = getImapConfig();
+
+        if (currentImap.user && currentImap.password) {
+          try {
+            const realMsgs = await fetchRealImapMessages(currentImap, 10);
+            target = realMsgs.find(m => m.id === args.emailId);
+          } catch (err) {
+            console.error('[MCP Email Server] get_email_content IMAP fetch error:', err.message);
+          }
+        }
+
+        if (!target) {
+          target = liveInboxStore.find(m => m.id === args.emailId);
+        }
+
+        if (!target) {
+          target = liveInboxStore[0];
+        }
+
         return res.json({
           jsonrpc: '2.0',
           result: {
@@ -229,9 +288,10 @@ app.post('/mcp', async (req, res) => {
       }
 
       if (toolName === 'configure_email_credentials') {
-        imapConfig.user = args.user;
-        imapConfig.password = args.password;
-        if (args.host) imapConfig.host = args.host;
+        const currentImap = getImapConfig();
+        currentImap.user = args.user;
+        currentImap.password = args.password;
+        if (args.host) currentImap.host = args.host;
 
         return res.json({
           jsonrpc: '2.0',
@@ -248,6 +308,45 @@ app.post('/mcp', async (req, res) => {
           },
           id
         });
+      }
+
+      if (toolName === 'send_email') {
+        const { to, subject, body } = args;
+        if (!to || !subject || !body) {
+          return res.status(400).json({
+            jsonrpc: '2.0',
+            error: { code: -32602, message: 'send_email requires "to", "subject", and "body"' },
+            id
+          });
+        }
+
+        try {
+          const sendResult = await sendEmailViaSmtp({ to, subject, body });
+          console.log(`[MCP Email Server] Sent email to ${to} (messageId: ${sendResult.messageId})`);
+          return res.json({
+            jsonrpc: '2.0',
+            result: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    status: 'success',
+                    message: `Email sent to ${to}`,
+                    ...sendResult
+                  })
+                }
+              ]
+            },
+            id
+          });
+        } catch (err) {
+          console.error('[MCP Email Server] send_email SMTP error:', err.message);
+          return res.status(500).json({
+            jsonrpc: '2.0',
+            error: { code: -32603, message: `Failed to send email: ${err.message}` },
+            id
+          });
+        }
       }
 
       return res.status(404).json({
@@ -268,8 +367,49 @@ app.post('/mcp', async (req, res) => {
   return res.status(404).json({ jsonrpc: '2.0', error: { code: -32601, message: 'Method not found' }, id });
 });
 
+function decodeQuotedPrintable(str) {
+  if (!str) return '';
+  return str
+    .replace(/=\r?\n/g, '')
+    .replace(/=([0-9A-F]{2})/gi, (match, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function cleanEmailBodyText(rawText) {
+  if (!rawText) return '';
+  let text = rawText;
+  if (/Content-Transfer-Encoding:\s*base64/i.test(text)) {
+    const parts = text.split(/\r?\n\r?\n/);
+    if (parts.length > 1) {
+      const b64Data = parts.slice(1).join('').replace(/\s+/g, '');
+      try { text = Buffer.from(b64Data, 'base64').toString('utf-8'); } catch(e){}
+    }
+  }
+  text = decodeQuotedPrintable(text);
+  // strip HTML and scripts
+  text = text.replace(/<style[\s\S]*?<\/style>/gi, '')
+             .replace(/<script[\s\S]*?<\/script>/gi, '')
+             .replace(/<[^>]+>/g, ' ')
+             .replace(/&nbsp;/g, ' ')
+             .replace(/&amp;/g, '&')
+             .replace(/&lt;/g, '<')
+             .replace(/&gt;/g, '>')
+             .replace(/[\r\n]+/g, '\n')
+             .replace(/[ \t]+/g, ' ')
+             .trim();
+  return text;
+}
+
+let cachedImapEmails = null;
+let lastCacheTime = 0;
+const CACHE_TTL_MS = 30000; // 30 seconds cache for snappy response
+
 // Helper: Live IMAP Message Fetching
 async function fetchRealImapMessages(config, limit = 5) {
+  const now = Date.now();
+  if (cachedImapEmails && (now - lastCacheTime < CACHE_TTL_MS)) {
+    return cachedImapEmails.slice(0, limit);
+  }
+
   const imapOptions = {
     ...config,
     tlsOptions: { rejectUnauthorized: false }
@@ -277,38 +417,42 @@ async function fetchRealImapMessages(config, limit = 5) {
   const connection = await imapSimple.connect({ imap: imapOptions });
   await connection.openBox('INBOX');
 
-
-  const searchCriteria = ['UNSEEN'];
-  const fetchOptions = { bodies: ['HEADER', 'TEXT', ''], struct: true };
+  const searchCriteria = ['ALL'];
+  const fetchOptions = { bodies: ['HEADER', 'TEXT'], struct: true };
 
   let results = await connection.search(searchCriteria, fetchOptions);
   if (!results || results.length === 0) {
-    // If no unread, fetch latest messages
-    results = await connection.search(['ALL'], fetchOptions);
+    connection.end();
+    return [];
   }
 
-  results = results.slice(-limit).reverse();
+  results = results.slice(-15).reverse();
 
   const fetchedEmails = results.map((item, idx) => {
     const header = item.parts.find(p => p.which === 'HEADER')?.body || {};
-    const textPart = item.parts.find(p => p.which === 'TEXT')?.body || '';
+    let textPart = item.parts.find(p => p.which === 'TEXT')?.body || '';
     const from = header.from ? header.from[0] : 'Unknown Sender';
     const subject = header.subject ? header.subject[0] : 'No Subject';
     const date = header.date ? header.date[0] : new Date().toLocaleString();
+
+    const cleanedBody = cleanEmailBodyText(textPart);
 
     return {
       id: `imap-msg-${item.attributes.uid || idx}`,
       from: from,
       subject: subject,
       date: date,
-      body: `From: ${from}\nSubject: ${subject}\nDate: ${date}\n\n${textPart.slice(0, 1500)}`
+      body: `From: ${from}\nSubject: ${subject}\nDate: ${date}\n\n${cleanedBody.slice(0, 1500)}`
     };
   });
 
   connection.end();
-  return fetchedEmails;
+  cachedImapEmails = fetchedEmails;
+  lastCacheTime = Date.now();
+  return fetchedEmails.slice(0, limit);
 }
 
 app.listen(MCP_PORT, () => {
   console.log(`📡 MCP Email Server running on http://localhost:${MCP_PORT}/mcp (JSON-RPC 2.0)`);
 });
+

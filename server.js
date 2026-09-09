@@ -2,8 +2,17 @@ const express = require('express');
 const path = require('path');
 const { fork } = require('child_process');
 
-// Spawn background MCP Email Server on port 3001
-fork(path.join(__dirname, 'mcp-email-server.js'));
+const { initDatabase } = require('./src/db/database');
+const reminderRoutes = require('./src/routes/reminderRoutes');
+const { callMcpTool, MCP_SERVER_URL } = require('./src/utils/mcpClient');
+const { startScheduler } = require('./src/services/schedulerService');
+const reminderService = require('./src/services/reminderService');
+const { resolveDueDate } = require('./src/utils/deadlineResolver');
+const { lookupContact } = require('./src/services/ownerDirectoryService');
+const aiAgentService = require('./src/services/aiAgentService');
+
+// Initialize Persistence Layer (SQLite with WAL mode)
+initDatabase();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,74 +20,40 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Sample emails for instant live demo testing
+// Mount Automated Reminder Management System Routes
+app.use('/api/reminders', reminderRoutes);
+
+// Sample emails for instant live demo testing (Real-world project & account sync samples)
 const SAMPLE_EMAILS = {
-  messy_sprint: `From: Sarah Jenkins <sarah.j@techcorp.com>
-To: Alex Rivera <alex.r@techcorp.com>, David Chen <david.c@techcorp.com>, Maria Santos <maria.s@techcorp.com>
-Subject: Re: Sprint Sync & Q3 Deliverables Urgent Updates
+  messy_sprint: `From: Rahul Sharma <thenorthremembers179@gmail.com>
+To: Lead Engineer <lead@techcorp.com>, DevOps Team <ops@techcorp.com>
+Subject: Re: Production Release & Database Audit Sprint Tasks
 
 Hey team,
 
-Thanks for joining the call earlier. I wanted to summarize what we talked about since things got a bit chaotic:
+Following up on our project status review today:
 
-First off, Alex - can you update the API authentication endpoint documentation by EOD Friday? The client integration team is waiting on this.
+1. Rahul Sharma - please complete the user data migration script and verify database integrity by Friday 5:00 PM.
+2. Ops Team - please update the SSL security certificates on the production load balancer by tomorrow 3:00 PM.
+3. Design Lead - submit the updated UI wireframes for customer review before Thursday at 2:00 PM.
+4. Also, someone needs to audit the server access logs for last month ASAP.
+5. Please verify the API rate limiter configurations before the client demo.
 
-Also David, we noticed high latency on the user analytics query. We need you to optimize the database query index by next Tuesday. 
+Best regards,
+Rahul Sharma`,
 
-Maria mentioned she will handle creating the initial Figma wireframes for the new settings dashboard. Let's make sure that's ready before the product review on Thursday at 2 PM.
+  vague_launch: `From: Operations Team <ops@enterprise-system.org>
+To: thenorthremembers179@gmail.com
+Subject: Post-Launch Operational Deliverables & Security Audit
 
-Wait, who is updating the deployment pipeline script? We spoke about fixing the Docker build step... someone needs to look into that ASAP.
+Team - following up on system updates:
 
-Also, someone should review the security audit logs for last month.
-
-Thanks,
-Sarah`,
-
-  vague_launch: `From: Marcus Vance <marcus@startup.io>
-To: Team All <team@startup.io>
-Subject: Post-Launch Action Items
-
-Team - great launch yesterday! Quick follow ups:
-
-1. Sarah, please draft the press release release notes by tomorrow 5 PM.
-2. Alex: set up the monitoring alerts for S3 bucket storage usage.
-3. We need to prepare the financial summary report for investors.
-4. Elena - update the customer support FAQ section by Friday.
-5. Can someone check why the automated welcome emails are landing in spam?`
+- Rahul Sharma: prepare the quarterly performance analysis report by tomorrow 5:00 PM.
+- Infrastructure Team: set up real-time monitoring alerts for cloud storage usage within 24 hours.
+- QA Lead: execute end-to-end regression tests for the authentication API by Friday 12:00 PM.
+- Elena: update the user onboarding documentation section by Friday.
+- Can someone verify why automated system notifications are landing in spam?`
 };
-
-const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'http://localhost:3001/mcp';
-
-// Helper: Query MCP Email Server over JSON-RPC 2.0
-async function callMcpTool(toolName, args = {}) {
-  const payload = {
-    jsonrpc: '2.0',
-    method: 'tools/call',
-    params: {
-      name: toolName,
-      arguments: args
-    },
-    id: Date.now()
-  };
-
-  const response = await fetch(MCP_SERVER_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) {
-    throw new Error(`MCP Server HTTP ${response.status}`);
-  }
-
-  const resJson = await response.json();
-  if (resJson.error) {
-    throw new Error(`MCP Error: ${resJson.error.message}`);
-  }
-
-  const rawText = resJson.result?.content?.[0]?.text;
-  return rawText ? JSON.parse(rawText) : resJson.result;
-}
 
 app.get('/api/samples', (req, res) => {
   res.json(SAMPLE_EMAILS);
@@ -162,9 +137,9 @@ app.post('/api/process-email', async (req, res) => {
     });
     await delay(800);
 
-    const extractedCandidates = parseRawEmailIntoTasks(emailText);
-    
-    sendEvent('status', { 
+    const extractedCandidates = await aiAgentService.extractCandidateTasks(emailText);
+
+    sendEvent('status', {
       agent: 'Extraction Agent', 
       type: 'agent-complete',
       message: `Extracted ${extractedCandidates.length} candidate tasks from email thread.`,
@@ -199,6 +174,7 @@ app.post('/api/process-email', async (req, res) => {
 
       let passedQA = false;
       const maxRetries = 3;
+      let lastQaReason = null;
 
       while (!passedQA && currentItem.attempts <= maxRetries) {
         // Step A: Assignment Sub-Agent (runs on 1st attempt or on retry)
@@ -212,10 +188,16 @@ app.post('/api/process-email', async (req, res) => {
           attempt: currentItem.attempts,
           message: `[${attemptLabel}] Applying 'ownership-rules' skill to infer owner & deadline for Task #${itemNum}...`
         });
-        await delay(700);
 
-        // Apply ownership & deadline inference rules (progressive resolution on retry)
-        currentItem = refineAssignment(currentItem, candidate, emailText);
+        // Real AI call — applies the ownership-rules skill, with QA retry feedback if any
+        const assignment = await aiAgentService.assignOwnerAndDeadline({
+          task: currentItem.task,
+          rawSnippet: currentItem.rawSnippet,
+          emailText,
+          attempt: currentItem.attempts,
+          previousFeedback: lastQaReason
+        });
+        currentItem = { ...currentItem, owner: assignment.owner, deadline: assignment.deadline };
 
         sendEvent('status', {
           agent: 'Assignment Sub-Agent',
@@ -225,7 +207,6 @@ app.post('/api/process-email', async (req, res) => {
           message: `[${attemptLabel}] Task #${itemNum} assigned -> Owner: "${currentItem.owner}", Deadline: "${currentItem.deadline}"`,
           itemState: currentItem
         });
-        await delay(600);
 
         // Step B: QA Sub-Agent Verification
         sendEvent('status', {
@@ -235,9 +216,13 @@ app.post('/api/process-email', async (req, res) => {
           attempt: currentItem.attempts,
           message: `[${attemptLabel}] Reviewing Task #${itemNum} against 'quality-check' skill criteria...`
         });
-        await delay(700);
 
-        const qaResult = evaluateQualityCheck(currentItem);
+        const qaResult = await aiAgentService.evaluateQuality({
+          task: currentItem.task,
+          owner: currentItem.owner,
+          deadline: currentItem.deadline
+        });
+        lastQaReason = qaResult.reason;
 
         if (qaResult.passed) {
           passedQA = true;
@@ -302,12 +287,73 @@ app.post('/api/process-email', async (req, res) => {
       groupedItems[ownerKey].push(item);
     });
 
+    // Persist verified items as reminders so the scheduler can act on them.
+    // Items still flagged 'Needs Human Review' are surfaced in the tracker
+    // but intentionally not scheduled — a human needs to fill the gaps first.
+    let remindersCreated = 0;
+    for (const item of processedItems) {
+      if (item.status !== 'Verified') continue;
+
+      const dueDate = resolveDueDate(item.deadline);
+      const contact = lookupContact(item.owner);
+
+      try {
+        const reminder = reminderService.createReminder({
+          source: 'email',
+          recipient_name: item.owner,
+          contact_email: contact.email,
+          contact_phone: contact.phone,
+          task_title: item.task.length > 140 ? item.task.slice(0, 137) + '...' : item.task,
+          task_details: item.rawSnippet,
+          due_at: dueDate.toISOString(),
+          status: 'PENDING'
+        });
+
+        item.reminderId = reminder.id;
+        item.reminderDueAt = reminder.due_at;
+
+        sendEvent('status', {
+          agent: 'Report Agent',
+          type: 'reminder-created',
+          itemId: item.id,
+          message: contact.email
+            ? `📌 Reminder scheduled for "${item.owner}" — due ${reminder.due_at} (will notify ${contact.email})`
+            : `📌 Reminder scheduled for "${item.owner}" — due ${reminder.due_at} (no contact on file — add one to src/config/owner-directory.json to enable auto-send)`,
+          reminder
+        });
+        remindersCreated++;
+      } catch (err) {
+        console.error(`Failed to create reminder for item ${item.id}:`, err.message);
+        sendEvent('status', {
+          agent: 'Report Agent',
+          type: 'reminder-error',
+          itemId: item.id,
+          message: `⚠️ Failed to schedule reminder for "${item.task}": ${err.message}`
+        });
+      }
+    }
+    // Real AI call — Report Agent writes a short executive summary
+    sendEvent('status', {
+      agent: 'Report Agent',
+      type: 'summary-generating',
+      message: 'Writing executive summary of the finalized tracker...'
+    });
+
+    let aiSummary = null;
+    try {
+      aiSummary = await aiAgentService.generateReportSummary(processedItems);
+    } catch (err) {
+      console.error('Failed to generate AI report summary:', err.message);
+    }
+
     sendEvent('final-report', {
       agent: 'Report Agent',
       type: 'report-complete',
-      message: 'Final Action Tracker compiled successfully!',
+      message: `Final Action Tracker compiled successfully! ${remindersCreated} reminder(s) scheduled.`,
       items: processedItems,
-      grouped: groupedItems
+      grouped: groupedItems,
+      remindersCreated,
+      summary: aiSummary
     });
 
     res.write('event: end\ndata: {}\n\n');
@@ -325,139 +371,19 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Extraction logic heuristic parser
-function parseRawEmailIntoTasks(text) {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  const tasks = [];
 
-  // Match common task patterns or line items
-  const sentencePattern = /(?:can you|please|need you to|will handle|should|needs to|action item|1\.|2\.|3\.|4\.|5\.|first off|also)/i;
-  
-  // Extract senders and recipients from headers if present
-  let senders = [];
-  const fromMatch = text.match(/From:\s*([^\n<]+)/i);
-  if (fromMatch) senders.push(fromMatch[1].trim());
+if (require.main === module) {
+  // Spawn background MCP Email Server on port 3001
+  fork(path.join(__dirname, 'mcp-email-server.js'));
 
-  lines.forEach(line => {
-    if (line.startsWith('From:') || line.startsWith('To:') || line.startsWith('Subject:') || line.startsWith('Hey') || line.startsWith('Thanks')) {
-      return;
-    }
-
-    if (sentencePattern.test(line) || line.length > 20) {
-      // Parse task details
-      let initialOwner = null;
-      let initialDeadline = null;
-      let cleanTask = line.replace(/^(?:\d+\.\s*|-|\*)/, '').trim();
-
-      // Check explicit owner mentions
-      if (/\bAlex\b/i.test(line)) initialOwner = 'Alex Rivera';
-      else if (/\bDavid\b/i.test(line)) initialOwner = 'David Chen';
-      else if (/\bMaria\b/i.test(line)) initialOwner = 'Maria Santos';
-      else if (/\bSarah\b/i.test(line)) initialOwner = 'Sarah Jenkins';
-      else if (/\bElena\b/i.test(line)) initialOwner = 'Elena Rostova';
-
-      // Check explicit deadlines
-      if (/EOD Friday|by Friday/i.test(line)) initialDeadline = 'Friday 5:00 PM';
-      else if (/next Tuesday/i.test(line)) initialDeadline = 'Next Tuesday 12:00 PM';
-      else if (/Thursday at 2 PM|Thursday/i.test(line)) initialDeadline = 'Thursday 2:00 PM';
-      else if (/tomorrow 5 PM|tomorrow/i.test(line)) initialDeadline = 'Tomorrow 5:00 PM';
-
-      tasks.push({
-        rawSnippet: line,
-        initialTask: cleanTask,
-        initialOwner: initialOwner,
-        initialDeadline: initialDeadline
-      });
-    }
+  app.listen(PORT, () => {
+    console.log(`Email to Action Tracker server running on http://localhost:${PORT}`);
   });
 
-  if (tasks.length === 0) {
-    tasks.push({
-      rawSnippet: text.slice(0, 80),
-      initialTask: 'Review raw email content and extract action steps',
-      initialOwner: null,
-      initialDeadline: null
-    });
-  }
-
-  return tasks;
+  // Start the reminder scheduler (polls due reminders + inbox replies)
+  startScheduler();
 }
 
-// Assignment Sub-Agent refinement heuristics (simulating iterative intelligence)
-function refineAssignment(item, candidate, fullEmailText) {
-  let task = item.task;
-  let owner = item.owner;
-  let deadline = item.deadline;
+module.exports = app;
 
-  // On Attempt 1: Keep initial parsed or infer owner if obvious
-  if (item.attempts === 1) {
-    if (!owner) {
-      if (/docker|deployment|pipeline|build/i.test(task)) {
-        owner = 'Alex Rivera (DevOps)';
-      } else if (/database|analytics|latency|query/i.test(task)) {
-        owner = 'David Chen (Backend)';
-      }
-    }
-  }
 
-  // On Attempt 2: If deadline is missing, infer from relative keywords or standard SLA
-  if (item.attempts === 2) {
-    if (!deadline) {
-      if (/ASAP|urgently|high latency|security|spam/i.test(fullEmailText + task)) {
-        deadline = 'Within 24 Hours (Urgent SLA)';
-      } else {
-        deadline = 'End of Week (Friday 5:00 PM)';
-      }
-    }
-    if (!owner) {
-      if (/security|audit/i.test(task)) {
-        owner = 'Sarah Jenkins (SecOps)';
-      } else if (/welcome email|spam/i.test(task)) {
-        owner = 'Alex Rivera (Infrastructure)';
-      } else if (/financial|investor/i.test(task)) {
-        owner = 'Marcus Vance (Finance Lead)';
-      }
-    }
-  }
-
-  // On Attempt 3: Provide best effort fallback
-  if (item.attempts === 3) {
-    if (!owner) {
-      owner = 'Unassigned (Requires Lead Triage)';
-    }
-    if (!deadline) {
-      deadline = 'TBD (Needs Owner Input)';
-    }
-  }
-
-  return {
-    ...item,
-    task: task,
-    owner: owner,
-    deadline: deadline
-  };
-}
-
-// QA Sub-Agent Quality Criteria Evaluation
-function evaluateQualityCheck(item) {
-  // Criterion 1: Clear task (length & specificity)
-  if (!item.task || item.task.length < 10) {
-    return { passed: false, reason: 'Task description vague or too short' };
-  }
-
-  // Criterion 2: Named owner (cannot be empty, unassigned, or generic requiring triage)
-  if (!item.owner || item.owner.includes('Unassigned') || item.owner.includes('Requires Lead Triage')) {
-    return { passed: false, reason: 'Missing explicit named owner' };
-  }
-
-  // Criterion 3: Deadline (cannot be empty, TBD, or unstated)
-  if (!item.deadline || item.deadline.includes('TBD') || item.deadline.includes('Needs Owner Input')) {
-    return { passed: false, reason: 'Missing explicit deadline' };
-  }
-
-  return { passed: true };
-}
-
-app.listen(PORT, () => {
-  console.log(`Email to Action Tracker server running on http://localhost:${PORT}`);
-});
