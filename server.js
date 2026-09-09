@@ -4,6 +4,12 @@ const { fork } = require('child_process');
 
 const { initDatabase } = require('./src/db/database');
 const reminderRoutes = require('./src/routes/reminderRoutes');
+const { callMcpTool, MCP_SERVER_URL } = require('./src/utils/mcpClient');
+const { startScheduler } = require('./src/services/schedulerService');
+const reminderService = require('./src/services/reminderService');
+const { resolveDueDate } = require('./src/utils/deadlineResolver');
+const { lookupContact } = require('./src/services/ownerDirectoryService');
+const aiAgentService = require('./src/services/aiAgentService');
 
 // Initialize Persistence Layer (SQLite with WAL mode)
 initDatabase();
@@ -48,39 +54,6 @@ Team - following up on system updates:
 - Elena: update the user onboarding documentation section by Friday.
 - Can someone verify why automated system notifications are landing in spam?`
 };
-
-const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'http://localhost:3001/mcp';
-
-// Helper: Query MCP Email Server over JSON-RPC 2.0
-async function callMcpTool(toolName, args = {}) {
-  const payload = {
-    jsonrpc: '2.0',
-    method: 'tools/call',
-    params: {
-      name: toolName,
-      arguments: args
-    },
-    id: Date.now()
-  };
-
-  const response = await fetch(MCP_SERVER_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) {
-    throw new Error(`MCP Server HTTP ${response.status}`);
-  }
-
-  const resJson = await response.json();
-  if (resJson.error) {
-    throw new Error(`MCP Error: ${resJson.error.message}`);
-  }
-
-  const rawText = resJson.result?.content?.[0]?.text;
-  return rawText ? JSON.parse(rawText) : resJson.result;
-}
 
 app.get('/api/samples', (req, res) => {
   res.json(SAMPLE_EMAILS);
@@ -164,9 +137,9 @@ app.post('/api/process-email', async (req, res) => {
     });
     await delay(800);
 
-    const extractedCandidates = parseRawEmailIntoTasks(emailText);
-    
-    sendEvent('status', { 
+    const extractedCandidates = await aiAgentService.extractCandidateTasks(emailText);
+
+    sendEvent('status', {
       agent: 'Extraction Agent', 
       type: 'agent-complete',
       message: `Extracted ${extractedCandidates.length} candidate tasks from email thread.`,
@@ -201,6 +174,7 @@ app.post('/api/process-email', async (req, res) => {
 
       let passedQA = false;
       const maxRetries = 3;
+      let lastQaReason = null;
 
       while (!passedQA && currentItem.attempts <= maxRetries) {
         // Step A: Assignment Sub-Agent (runs on 1st attempt or on retry)
@@ -214,10 +188,16 @@ app.post('/api/process-email', async (req, res) => {
           attempt: currentItem.attempts,
           message: `[${attemptLabel}] Applying 'ownership-rules' skill to infer owner & deadline for Task #${itemNum}...`
         });
-        await delay(700);
 
-        // Apply ownership & deadline inference rules (progressive resolution on retry)
-        currentItem = refineAssignment(currentItem, candidate, emailText);
+        // Real AI call — applies the ownership-rules skill, with QA retry feedback if any
+        const assignment = await aiAgentService.assignOwnerAndDeadline({
+          task: currentItem.task,
+          rawSnippet: currentItem.rawSnippet,
+          emailText,
+          attempt: currentItem.attempts,
+          previousFeedback: lastQaReason
+        });
+        currentItem = { ...currentItem, owner: assignment.owner, deadline: assignment.deadline };
 
         sendEvent('status', {
           agent: 'Assignment Sub-Agent',
@@ -227,7 +207,6 @@ app.post('/api/process-email', async (req, res) => {
           message: `[${attemptLabel}] Task #${itemNum} assigned -> Owner: "${currentItem.owner}", Deadline: "${currentItem.deadline}"`,
           itemState: currentItem
         });
-        await delay(600);
 
         // Step B: QA Sub-Agent Verification
         sendEvent('status', {
@@ -237,9 +216,13 @@ app.post('/api/process-email', async (req, res) => {
           attempt: currentItem.attempts,
           message: `[${attemptLabel}] Reviewing Task #${itemNum} against 'quality-check' skill criteria...`
         });
-        await delay(700);
 
-        const qaResult = evaluateQualityCheck(currentItem);
+        const qaResult = await aiAgentService.evaluateQuality({
+          task: currentItem.task,
+          owner: currentItem.owner,
+          deadline: currentItem.deadline
+        });
+        lastQaReason = qaResult.reason;
 
         if (qaResult.passed) {
           passedQA = true;
@@ -304,12 +287,73 @@ app.post('/api/process-email', async (req, res) => {
       groupedItems[ownerKey].push(item);
     });
 
+    // Persist verified items as reminders so the scheduler can act on them.
+    // Items still flagged 'Needs Human Review' are surfaced in the tracker
+    // but intentionally not scheduled — a human needs to fill the gaps first.
+    let remindersCreated = 0;
+    for (const item of processedItems) {
+      if (item.status !== 'Verified') continue;
+
+      const dueDate = resolveDueDate(item.deadline);
+      const contact = lookupContact(item.owner);
+
+      try {
+        const reminder = reminderService.createReminder({
+          source: 'email',
+          recipient_name: item.owner,
+          contact_email: contact.email,
+          contact_phone: contact.phone,
+          task_title: item.task.length > 140 ? item.task.slice(0, 137) + '...' : item.task,
+          task_details: item.rawSnippet,
+          due_at: dueDate.toISOString(),
+          status: 'PENDING'
+        });
+
+        item.reminderId = reminder.id;
+        item.reminderDueAt = reminder.due_at;
+
+        sendEvent('status', {
+          agent: 'Report Agent',
+          type: 'reminder-created',
+          itemId: item.id,
+          message: contact.email
+            ? `📌 Reminder scheduled for "${item.owner}" — due ${reminder.due_at} (will notify ${contact.email})`
+            : `📌 Reminder scheduled for "${item.owner}" — due ${reminder.due_at} (no contact on file — add one to src/config/owner-directory.json to enable auto-send)`,
+          reminder
+        });
+        remindersCreated++;
+      } catch (err) {
+        console.error(`Failed to create reminder for item ${item.id}:`, err.message);
+        sendEvent('status', {
+          agent: 'Report Agent',
+          type: 'reminder-error',
+          itemId: item.id,
+          message: `⚠️ Failed to schedule reminder for "${item.task}": ${err.message}`
+        });
+      }
+    }
+    // Real AI call — Report Agent writes a short executive summary
+    sendEvent('status', {
+      agent: 'Report Agent',
+      type: 'summary-generating',
+      message: 'Writing executive summary of the finalized tracker...'
+    });
+
+    let aiSummary = null;
+    try {
+      aiSummary = await aiAgentService.generateReportSummary(processedItems);
+    } catch (err) {
+      console.error('Failed to generate AI report summary:', err.message);
+    }
+
     sendEvent('final-report', {
       agent: 'Report Agent',
       type: 'report-complete',
-      message: 'Final Action Tracker compiled successfully!',
+      message: `Final Action Tracker compiled successfully! ${remindersCreated} reminder(s) scheduled.`,
       items: processedItems,
-      grouped: groupedItems
+      grouped: groupedItems,
+      remindersCreated,
+      summary: aiSummary
     });
 
     res.write('event: end\ndata: {}\n\n');
@@ -327,178 +371,6 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Extraction logic heuristic parser
-function parseRawEmailIntoTasks(text) {
-  const tasks = [];
-
-  // Extract default owner from headers if present
-  let defaultOwner = null;
-  const fromMatch = text.match(/From:\s*([^<\n]+)/i);
-  if (fromMatch) {
-    const rawSender = fromMatch[1].trim();
-    if (rawSender && !rawSender.includes('@')) {
-      defaultOwner = rawSender;
-    }
-  }
-
-  // Remove email header blocks before sentence extraction
-  const cleanBody = text
-    .replace(/From:[^\n]+\n?/gi, '')
-    .replace(/To:[^\n]+\n?/gi, '')
-    .replace(/Subject:[^\n]+\n?/gi, '')
-    .replace(/Date:[^\n]+\n?/gi, '')
-    .trim();
-
-  // Split body into sentences or bullet points
-  const rawSegments = cleanBody
-    .split(/(?:\r?\n)+|(?<=[.!?])\s+/)
-    .map(s => s.trim())
-    .filter(s => s.length > 10);
-
-  const sentencePattern = /(?:can you|please|need you to|will handle|should|needs to|action item|1\.|2\.|3\.|4\.|5\.|first off|also|update|fix|patch|prepare|review|check|verify|sign in|access|security|member|group|alert)/i;
-
-  rawSegments.forEach(segment => {
-    // Ignore boilerplate footers / common privacy notices
-    if (segment.includes("Privacy Policy") || segment.includes("Terms of Service") || segment.includes("stop using Sign in with Google")) {
-      return;
-    }
-
-    if (sentencePattern.test(segment) || segment.length > 20) {
-      let initialOwner = null;
-      let initialDeadline = null;
-
-      // Clean segment of bullet points/numbers
-      let cleanTask = segment.replace(/^(?:\d+\.\s*|-|\*)/, '').trim();
-
-      // Ensure concise task summary (cap at 140 chars for clean display)
-      if (cleanTask.length > 140) {
-        cleanTask = cleanTask.slice(0, 137) + '...';
-      }
-
-      // Check explicit owner mentions dynamically (e.g. "Rahul Sharma - ", "Ops Team:", "@John")
-      const namePrefixMatch = segment.match(/^(?:@|\b)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*[:,\-]/);
-      const ignoredWords = ['Hi', 'Hey', 'Dear', 'Thanks', 'Team', 'Please', 'Also', 'If', 'This', 'You', 'Wait', 'First'];
-      if (namePrefixMatch && !ignoredWords.includes(namePrefixMatch[1])) {
-        initialOwner = namePrefixMatch[1];
-      }
-
-      // Check explicit deadlines dynamically
-      if (/EOD Friday|by Friday/i.test(segment)) initialDeadline = 'Friday 5:00 PM';
-      else if (/next Tuesday/i.test(segment)) initialDeadline = 'Next Tuesday 12:00 PM';
-      else if (/Thursday at 2 PM|Thursday/i.test(segment)) initialDeadline = 'Thursday 2:00 PM';
-      else if (/tomorrow 5 PM|tomorrow at 3 PM|tomorrow/i.test(segment)) initialDeadline = 'Tomorrow 5:00 PM';
-      else if (/tonight|by midnight/i.test(segment)) initialDeadline = 'Tonight 11:59 PM';
-      else if (/ASAP|immediately|urgent/i.test(segment)) initialDeadline = 'Within 24 Hours';
-
-      tasks.push({
-        rawSnippet: segment.length > 100 ? segment.slice(0, 97) + '...' : segment,
-        initialTask: cleanTask,
-        initialOwner: initialOwner || defaultOwner,
-        initialDeadline: initialDeadline
-      });
-    }
-  });
-
-  if (tasks.length === 0) {
-    let summarySnippet = cleanBody.slice(0, 120);
-    if (cleanBody.length > 120) summarySnippet += '...';
-    tasks.push({
-      rawSnippet: summarySnippet,
-      initialTask: summarySnippet || 'Review email notification details',
-      initialOwner: defaultOwner,
-      initialDeadline: null
-    });
-  }
-
-  return tasks;
-}
-
-// Assignment Sub-Agent refinement heuristics (simulating iterative intelligence)
-function refineAssignment(item, candidate, fullEmailText) {
-  let task = item.task;
-  let owner = item.owner;
-  let deadline = item.deadline;
-
-  // Extract fallback sender/recipient from full email text
-  let fallbackOwner = null;
-  const fromMatch = fullEmailText.match(/From:\s*([^<\n]+)/i);
-  if (fromMatch) {
-    const raw = fromMatch[1].trim();
-    if (raw && !raw.includes('@')) fallbackOwner = raw;
-  }
-
-  // On Attempt 1: Keep initial parsed or infer owner if obvious
-  if (item.attempts === 1) {
-    if (!owner) {
-      if (/ssl|security|cert|auth|load balancer/i.test(task)) {
-        owner = 'DevOps / Infrastructure Team';
-      } else if (/database|migration|query|data/i.test(task)) {
-        owner = 'Backend / Database Engineer';
-      } else if (/ui|wireframe|figma|design/i.test(task)) {
-        owner = 'UI/UX Design Lead';
-      } else if (fallbackOwner) {
-        owner = fallbackOwner;
-      }
-    }
-  }
-
-  // On Attempt 2: If deadline is missing, infer from relative keywords or standard SLA
-  if (item.attempts === 2) {
-    if (!deadline) {
-      if (/ASAP|urgently|high latency|security|spam|urgent|escalation|alert/i.test(fullEmailText + task)) {
-        deadline = 'Within 24 Hours (Urgent SLA)';
-      } else {
-        deadline = 'End of Week (Friday 5:00 PM)';
-      }
-    }
-    if (!owner) {
-      if (/security|audit|access log/i.test(task)) {
-        owner = 'Security Audit Lead';
-      } else if (/test|qa|regression/i.test(task)) {
-        owner = 'QA Automation Lead';
-      } else if (fallbackOwner) {
-        owner = fallbackOwner;
-      }
-    }
-  }
-
-  // On Attempt 3: Provide best effort fallback
-  if (item.attempts === 3) {
-    if (!owner) {
-      owner = fallbackOwner || 'Unassigned (Requires Lead Triage)';
-    }
-    if (!deadline) {
-      deadline = 'Within 3 Business Days (Standard SLA)';
-    }
-  }
-
-  return {
-    ...item,
-    task: task,
-    owner: owner,
-    deadline: deadline
-  };
-}
-
-// QA Sub-Agent Quality Criteria Evaluation
-function evaluateQualityCheck(item) {
-  // Criterion 1: Clear task (length & specificity)
-  if (!item.task || item.task.length < 10) {
-    return { passed: false, reason: 'Task description vague or too short' };
-  }
-
-  // Criterion 2: Named owner (cannot be empty, unassigned, or generic requiring triage)
-  if (!item.owner || item.owner.includes('Unassigned') || item.owner.includes('Requires Lead Triage')) {
-    return { passed: false, reason: 'Missing explicit named owner' };
-  }
-
-  // Criterion 3: Deadline (cannot be empty, TBD, or unstated)
-  if (!item.deadline || item.deadline.includes('TBD') || item.deadline.includes('Needs Owner Input')) {
-    return { passed: false, reason: 'Missing explicit deadline' };
-  }
-
-  return { passed: true };
-}
 
 if (require.main === module) {
   // Spawn background MCP Email Server on port 3001
@@ -507,6 +379,9 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Email to Action Tracker server running on http://localhost:${PORT}`);
   });
+
+  // Start the reminder scheduler (polls due reminders + inbox replies)
+  startScheduler();
 }
 
 module.exports = app;

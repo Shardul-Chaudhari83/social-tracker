@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS escalation_logs (
     action_type TEXT NOT NULL CHECK (
         action_type IN (
             'EMAIL_SENT',
+            'WHATSAPP_SENT',
             'REPLY_RECEIVED',
             'AI_CALL_PLACED',
             'MANUAL_OVERRIDE'

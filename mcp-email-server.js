@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const imapSimple = require('imap-simple');
+const nodemailer = require('nodemailer');
 
 const MCP_PORT = process.env.MCP_PORT || 3001;
 const app = express();
@@ -16,6 +17,50 @@ function getImapConfig() {
     tls: true,
     authTimeout: 8000
   };
+}
+
+// Load dynamic SMTP credentials from .env (same mailbox creds as IMAP by default —
+// a Gmail App Password works for both IMAP and SMTP).
+function getSmtpConfig() {
+  return {
+    user: process.env.EMAIL_USER || '',
+    password: process.env.EMAIL_PASSWORD || '',
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: parseInt(process.env.SMTP_PORT || '465', 10)
+  };
+}
+
+let cachedTransporter = null;
+let cachedTransporterUser = null;
+
+function getTransporter() {
+  const config = getSmtpConfig();
+  if (!config.user || !config.password) {
+    throw new Error('SMTP credentials not configured (EMAIL_USER / EMAIL_PASSWORD missing in .env)');
+  }
+  // Rebuild transporter if credentials changed (e.g. via configure_email_credentials)
+  if (!cachedTransporter || cachedTransporterUser !== config.user) {
+    cachedTransporter = nodemailer.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.port === 465,
+      auth: { user: config.user, pass: config.password }
+    });
+    cachedTransporterUser = config.user;
+  }
+  return cachedTransporter;
+}
+
+async function sendEmailViaSmtp({ to, subject, body }) {
+  const config = getSmtpConfig();
+  const transporter = getTransporter();
+  const info = await transporter.sendMail({
+    from: config.user,
+    to,
+    subject,
+    text: body
+  });
+  return { messageId: info.messageId, accepted: info.accepted, rejected: info.rejected };
 }
 
 
@@ -109,6 +154,19 @@ const MCP_MANIFEST = {
           host: { type: 'string' }
         },
         required: ['user', 'password']
+      }
+    },
+    {
+      name: 'send_email',
+      description: 'Send an outbound email via SMTP using the configured mailbox credentials',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address' },
+          subject: { type: 'string', description: 'Email subject line' },
+          body: { type: 'string', description: 'Plain-text email body' }
+        },
+        required: ['to', 'subject', 'body']
       }
     }
   ]
@@ -250,6 +308,45 @@ app.post('/mcp', async (req, res) => {
           },
           id
         });
+      }
+
+      if (toolName === 'send_email') {
+        const { to, subject, body } = args;
+        if (!to || !subject || !body) {
+          return res.status(400).json({
+            jsonrpc: '2.0',
+            error: { code: -32602, message: 'send_email requires "to", "subject", and "body"' },
+            id
+          });
+        }
+
+        try {
+          const sendResult = await sendEmailViaSmtp({ to, subject, body });
+          console.log(`[MCP Email Server] Sent email to ${to} (messageId: ${sendResult.messageId})`);
+          return res.json({
+            jsonrpc: '2.0',
+            result: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    status: 'success',
+                    message: `Email sent to ${to}`,
+                    ...sendResult
+                  })
+                }
+              ]
+            },
+            id
+          });
+        } catch (err) {
+          console.error('[MCP Email Server] send_email SMTP error:', err.message);
+          return res.status(500).json({
+            jsonrpc: '2.0',
+            error: { code: -32603, message: `Failed to send email: ${err.message}` },
+            id
+          });
+        }
       }
 
       return res.status(404).json({

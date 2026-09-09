@@ -16,6 +16,7 @@ const ACTIVE_STATUSES = ['PENDING', 'MESSAGED', 'CALL_SCHEDULED'];
 
 const VALID_ACTION_TYPES = [
   'EMAIL_SENT',
+  'WHATSAPP_SENT',
   'REPLY_RECEIVED',
   'AI_CALL_PLACED',
   'MANUAL_OVERRIDE'
@@ -164,6 +165,42 @@ function getActiveReminders() {
   `);
 
   return stmt.all(...ACTIVE_STATUSES);
+}
+
+/**
+ * Retrieves PENDING reminders whose due_at has passed — the scheduler's
+ * candidates for sending the first reminder message.
+ * @returns {Array} List of due reminders sorted by due_at ascending
+ */
+function getDueReminders() {
+  const db = getDatabase();
+  // due_at is stored as an ISO 8601 string (toISOString(), "T"-separated with
+  // a trailing "Z"), while datetime('now') uses a space separator — comparing
+  // the raw strings sorts wrong, so both sides are normalized through
+  // SQLite's datetime() first.
+  const stmt = db.prepare(`
+    SELECT * FROM reminders
+    WHERE status = 'PENDING' AND datetime(due_at) <= datetime('now')
+    ORDER BY due_at ASC
+  `);
+  return stmt.all();
+}
+
+/**
+ * Retrieves MESSAGED reminders whose last action (the reminder send) is
+ * older than the given cutoff — candidates for escalation to the next
+ * channel (e.g. email -> WhatsApp).
+ * @param {string} cutoffIso - ISO timestamp; reminders last acted on at or before this are stale
+ * @returns {Array} List of stale reminders sorted by last_action_at ascending
+ */
+function getStaleMessagedReminders(cutoffIso) {
+  const db = getDatabase();
+  const stmt = db.prepare(`
+    SELECT * FROM reminders
+    WHERE status = 'MESSAGED' AND last_action_at IS NOT NULL AND datetime(last_action_at) <= datetime(?)
+    ORDER BY last_action_at ASC
+  `);
+  return stmt.all(cutoffIso);
 }
 
 /**
@@ -441,6 +478,8 @@ module.exports = {
   createReminder,
   getReminderById,
   getActiveReminders,
+  getDueReminders,
+  getStaleMessagedReminders,
   listReminders,
   updateReminderStatus,
   logEscalationAction,

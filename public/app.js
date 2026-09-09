@@ -14,11 +14,59 @@ document.addEventListener('DOMContentLoaded', () => {
   const tableBody = document.getElementById('tableBody');
   const itemCountBadge = document.getElementById('itemCountBadge');
   const statusIndicator = document.getElementById('statusIndicator');
+  const remindersTableBody = document.getElementById('remindersTableBody');
+  const reminderCountBadge = document.getElementById('reminderCountBadge');
+  const btnRefreshReminders = document.getElementById('btnRefreshReminders');
+  const aiSummaryBanner = document.getElementById('aiSummaryBanner');
+  const aiSummaryText = document.getElementById('aiSummaryText');
 
   let samples = {};
 
   // Check MCP Server status
   checkMcpStatus();
+
+  // Reminders dashboard
+  loadReminders();
+  btnRefreshReminders.addEventListener('click', loadReminders);
+
+  async function loadReminders() {
+    try {
+      const res = await fetch('/api/reminders?limit=25');
+      const data = await res.json();
+      renderReminders(data.data || []);
+    } catch (err) {
+      console.error('Failed to load reminders:', err.message);
+    }
+  }
+
+  function renderReminders(reminders) {
+    if (!reminders || reminders.length === 0) {
+      remindersTableBody.innerHTML = '<tr class="empty-row"><td colspan="5">No reminders yet. Process an email above to schedule some.</td></tr>';
+      reminderCountBadge.textContent = '0 Active';
+      return;
+    }
+
+    const activeStatuses = ['PENDING', 'MESSAGED', 'CALL_SCHEDULED'];
+    const activeCount = reminders.filter(r => activeStatuses.includes(r.status)).length;
+    reminderCountBadge.textContent = `${activeCount} Active`;
+
+    remindersTableBody.innerHTML = '';
+    reminders.forEach(r => {
+      const row = document.createElement('tr');
+      const dueDate = new Date(r.due_at);
+      const dueLabel = isNaN(dueDate.getTime()) ? r.due_at : dueDate.toLocaleString();
+      const contact = r.contact_email || r.contact_phone || 'No contact on file';
+
+      row.innerHTML = `
+        <td><span class="owner-chip">${escapeHtml(r.recipient_name)}</span></td>
+        <td>${escapeHtml(r.task_title)}</td>
+        <td>${escapeHtml(dueLabel)}</td>
+        <td>${escapeHtml(contact)}</td>
+        <td><span class="reminder-status-pill status-${r.status.toLowerCase()}">${escapeHtml(r.status)}</span></td>
+      `;
+      remindersTableBody.appendChild(row);
+    });
+  }
 
   async function checkMcpStatus() {
     try {
@@ -161,6 +209,7 @@ document.addEventListener('DOMContentLoaded', () => {
     logContainer.innerHTML = ''; // clear previous logs
     tableBody.innerHTML = '<tr class="empty-row"><td colspan="5">Processing email thread through AI agent team...</td></tr>';
     itemCountBadge.textContent = '0 Items';
+    aiSummaryBanner.hidden = true;
 
     try {
       const response = await fetch('/api/process-email', {
@@ -227,6 +276,8 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (eventType === 'final-report') {
       appendLog(data.agent, data.type, data.message);
       renderTable(data.items);
+      renderAiSummary(data.summary);
+      loadReminders();
     } else if (eventType === 'error') {
       appendLog('System', 'error', data.message);
     }
@@ -291,6 +342,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
       tableBody.appendChild(row);
     });
+  }
+
+  function renderAiSummary(summary) {
+    if (!summary) {
+      aiSummaryBanner.hidden = true;
+      return;
+    }
+    aiSummaryText.textContent = summary;
+    aiSummaryBanner.hidden = false;
   }
 
   function escapeHtml(str) {

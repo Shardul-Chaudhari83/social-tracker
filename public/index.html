@@ -98,6 +98,10 @@
           <span class="item-count-badge" id="itemCountBadge">0 Items</span>
         </div>
         <div class="card-body">
+          <div class="ai-summary-banner" id="aiSummaryBanner" hidden>
+            <span class="ai-summary-label">🧠 AI Executive Summary</span>
+            <p id="aiSummaryText"></p>
+          </div>
           <div class="table-responsive">
             <table class="tracker-table" id="trackerTable">
               <thead>
@@ -112,6 +116,38 @@
               <tbody id="tableBody">
                 <tr class="empty-row">
                   <td colspan="5">No action items processed yet. Submit an email above to view tracker results.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- New Section: Scheduled Reminders -->
+      <section class="card reminders-section">
+        <div class="card-header">
+          <h2>4. Scheduled Reminders</h2>
+          <div class="reminders-header-actions">
+            <span class="item-count-badge" id="reminderCountBadge">0 Active</span>
+            <button type="button" id="btnRefreshReminders" class="btn-secondary">Refresh</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <p class="reminders-hint">Verified action items are auto-scheduled here. A background poller sends the reminder email once <code>due_at</code> passes, and marks it satisfied when the recipient replies.</p>
+          <div class="table-responsive">
+            <table class="tracker-table" id="remindersTable">
+              <thead>
+                <tr>
+                  <th>Recipient</th>
+                  <th>Task</th>
+                  <th>Due At</th>
+                  <th>Contact</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="remindersTableBody">
+                <tr class="empty-row">
+                  <td colspan="5">No reminders yet. Process an email above to schedule some.</td>
                 </tr>
               </tbody>
             </table>
