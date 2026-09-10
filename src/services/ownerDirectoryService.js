@@ -1,7 +1,8 @@
 // Minimal owner-name -> contact lookup. The agent pipeline only ever
 // produces free-text owner names/roles (e.g. "Rahul Sharma",
 // "DevOps / Infrastructure Team"), so something has to map those to a real
-// contact_email/contact_phone before a reminder can actually be messaged.
+// contact_email / contact_phone / telegram chat_id before a reminder can
+// actually be messaged.
 //
 // This is a flat-file stand-in for a real directory/CRM lookup. Edit
 // src/config/owner-directory.json to add more people/teams. An owner not
@@ -24,22 +25,22 @@ function loadDirectory() {
   }
 }
 
+const EMPTY_CONTACT = { email: null, phone: null, telegram: null };
+
 /**
  * Looks up contact info for a free-text owner name/role.
  * @param {string|null} ownerName
- * @returns {{email: string|null, phone: string|null}}
+ * @returns {{email: string|null, phone: string|null, telegram: string|null}}
  */
 function lookupContact(ownerName) {
-  if (!ownerName) return { email: null, phone: null };
+  if (!ownerName) return EMPTY_CONTACT;
 
   const directory = loadDirectory();
-  if (directory[ownerName]) return directory[ownerName];
+  const entry = directory[ownerName] || directory[
+    Object.keys(directory).find(key => key.toLowerCase() === ownerName.toLowerCase())
+  ];
 
-  const caseInsensitiveKey = Object.keys(directory).find(
-    key => key.toLowerCase() === ownerName.toLowerCase()
-  );
-
-  return caseInsensitiveKey ? directory[caseInsensitiveKey] : { email: null, phone: null };
+  return entry ? { ...EMPTY_CONTACT, ...entry } : EMPTY_CONTACT;
 }
 
 module.exports = { lookupContact, loadDirectory };

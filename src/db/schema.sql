@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS reminders (
     recipient_name TEXT NOT NULL,
     contact_email TEXT,
     contact_phone TEXT,
+    contact_telegram_chat_id TEXT,
     task_title TEXT NOT NULL,
     task_details TEXT NOT NULL,
     due_at TEXT NOT NULL,
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS escalation_logs (
         action_type IN (
             'EMAIL_SENT',
             'WHATSAPP_SENT',
+            'TELEGRAM_SENT',
             'REPLY_RECEIVED',
             'AI_CALL_PLACED',
             'MANUAL_OVERRIDE'

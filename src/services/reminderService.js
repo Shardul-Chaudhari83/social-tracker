@@ -17,6 +17,7 @@ const ACTIVE_STATUSES = ['PENDING', 'MESSAGED', 'CALL_SCHEDULED'];
 const VALID_ACTION_TYPES = [
   'EMAIL_SENT',
   'WHATSAPP_SENT',
+  'TELEGRAM_SENT',
   'REPLY_RECEIVED',
   'AI_CALL_PLACED',
   'MANUAL_OVERRIDE'
@@ -46,6 +47,7 @@ function createReminder(data) {
     source = 'manual',
     contact_email = null,
     contact_phone = null,
+    contact_telegram_chat_id = null,
     status = 'PENDING',
     escalation_attempts = 0
   } = data;
@@ -80,11 +82,11 @@ function createReminder(data) {
 
   const stmt = db.prepare(`
     INSERT INTO reminders (
-      id, source, recipient_name, contact_email, contact_phone,
+      id, source, recipient_name, contact_email, contact_phone, contact_telegram_chat_id,
       task_title, task_details, due_at, status, escalation_attempts,
       last_action_at, created_at, updated_at
     ) VALUES (
-      @id, @source, @recipient_name, @contact_email, @contact_phone,
+      @id, @source, @recipient_name, @contact_email, @contact_phone, @contact_telegram_chat_id,
       @task_title, @task_details, @due_at, @status, @escalation_attempts,
       @last_action_at, @created_at, @updated_at
     )
@@ -96,6 +98,7 @@ function createReminder(data) {
     recipient_name: recipient_name.trim(),
     contact_email: contact_email ? contact_email.trim() : null,
     contact_phone: contact_phone ? contact_phone.trim() : null,
+    contact_telegram_chat_id: contact_telegram_chat_id ? String(contact_telegram_chat_id).trim() : null,
     task_title: task_title.trim(),
     task_details: task_details.trim(),
     due_at: dueAtIso,

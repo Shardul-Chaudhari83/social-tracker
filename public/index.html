@@ -133,7 +133,7 @@
           </div>
         </div>
         <div class="card-body">
-          <p class="reminders-hint">Verified action items are auto-scheduled here. A background poller sends the reminder email once <code>due_at</code> passes, and marks it satisfied when the recipient replies.</p>
+          <p class="reminders-hint">Verified action items are auto-scheduled here. A background poller sends the reminder email once <code>due_at</code> passes, marks it satisfied when the recipient replies, and escalates to Telegram if it goes unanswered too long.</p>
           <div class="table-responsive">
             <table class="tracker-table" id="remindersTable">
               <thead>

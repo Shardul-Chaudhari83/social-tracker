@@ -55,7 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const row = document.createElement('tr');
       const dueDate = new Date(r.due_at);
       const dueLabel = isNaN(dueDate.getTime()) ? r.due_at : dueDate.toLocaleString();
-      const contact = r.contact_email || r.contact_phone || 'No contact on file';
+      const contact = r.contact_email || r.contact_telegram_chat_id || r.contact_phone || 'No contact on file';
 
       row.innerHTML = `
         <td><span class="owner-chip">${escapeHtml(r.recipient_name)}</span></td>

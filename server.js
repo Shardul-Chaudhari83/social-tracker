@@ -303,6 +303,7 @@ app.post('/api/process-email', async (req, res) => {
           recipient_name: item.owner,
           contact_email: contact.email,
           contact_phone: contact.phone,
+          contact_telegram_chat_id: contact.telegram,
           task_title: item.task.length > 140 ? item.task.slice(0, 137) + '...' : item.task,
           task_details: item.rawSnippet,
           due_at: dueDate.toISOString(),
