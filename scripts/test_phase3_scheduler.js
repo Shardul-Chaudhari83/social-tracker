@@ -20,7 +20,6 @@
 require('dotenv').config();
 const path = require('path');
 const fs = require('fs');
-const { fork } = require('child_process');
 
 const TEST_DB_PATH = path.join(__dirname, '..', 'data', 'test_scheduler.db');
 process.env.DB_PATH = TEST_DB_PATH;
@@ -28,51 +27,7 @@ process.env.DB_PATH = TEST_DB_PATH;
 const { initDatabase, closeDatabase } = require('../src/db/database');
 const reminderService = require('../src/services/reminderService');
 const schedulerService = require('../src/services/schedulerService');
-const { MCP_SERVER_URL } = require('../src/utils/mcpClient');
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function pingMcpServer() {
-  try {
-    const res = await fetch(MCP_SERVER_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 })
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Reuses an already-running MCP Email Server if one is reachable, otherwise
- * forks a temporary one and waits for it to come up. Returns the child
- * process handle (or null if reusing an existing server) so the caller can
- * clean it up afterward.
- */
-async function ensureMcpServer() {
-  if (await pingMcpServer()) {
-    console.log('[Test] Reusing already-running MCP Email Server on port 3001.');
-    return null;
-  }
-
-  console.log('[Test] No MCP Email Server detected — starting a temporary one...');
-  const child = fork(path.join(__dirname, '..', 'mcp-email-server.js'));
-
-  for (let i = 0; i < 20; i++) {
-    await sleep(300);
-    if (await pingMcpServer()) {
-      console.log('[Test] Temporary MCP Email Server is ready.');
-      return child;
-    }
-  }
-
-  child.kill();
-  throw new Error('MCP Email Server did not become ready within 6s');
-}
+const { ensureMcpServer } = require('../src/utils/ensureMcpServer');
 
 async function runSend(recipientEmail, recipientName) {
   initDatabase(TEST_DB_PATH);
