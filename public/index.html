@@ -22,6 +22,12 @@
         </div>
         <h1>Email to Action Tracker</h1>
         <p class="subtitle">Transform unstructured, messy email threads into verified action items with real-time QA self-checking loops.</p>
+        <div class="integration-status-row" id="integrationStatusRow">
+          <span class="integration-pill" id="pill-email"><span class="pill-dot"></span> Email</span>
+          <span class="integration-pill" id="pill-telegram"><span class="pill-dot"></span> Telegram</span>
+          <span class="integration-pill" id="pill-whatsapp"><span class="pill-dot"></span> WhatsApp</span>
+          <span class="integration-pill" id="pill-ai"><span class="pill-dot"></span> Claude AI</span>
+        </div>
       </div>
     </header>
 
@@ -35,6 +41,10 @@
             <button type="button" class="btn-mcp-fetch" id="btnFetchMcp">
               <span>📡 Fetch Real Emails (MCP)</span>
             </button>
+            <button type="button" class="btn-mcp-fetch btn-upload-file" id="btnUploadFile">
+              <span>📁 Upload File</span>
+            </button>
+            <input type="file" id="fileUploadInput" accept=".txt,.eml,text/plain" hidden>
             <span class="divider">|</span>
             <span>Load Sample:</span>
             <button type="button" class="btn-sample" id="btn-sample-1">Messy Sprint</button>
@@ -143,11 +153,50 @@
                   <th>Due At</th>
                   <th>Contact</th>
                   <th>Status</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="remindersTableBody">
                 <tr class="empty-row">
-                  <td colspan="5">No reminders yet. Process an email above to schedule some.</td>
+                  <td colspan="6">No reminders yet. Process an email above to schedule some.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- New Section: Contact Directory -->
+      <section class="card contacts-section">
+        <div class="card-header">
+          <h2>5. Contact Directory</h2>
+          <span class="item-count-badge" id="contactCountBadge">0 Contacts</span>
+        </div>
+        <div class="card-body">
+          <p class="reminders-hint">Maps an owner name from the pipeline (e.g. "Rahul Sharma") to how reminders reach them. Email is tried first, then Telegram, then WhatsApp.</p>
+
+          <form class="contact-form" id="contactForm">
+            <input type="text" id="contactName" placeholder="Owner name (must match the pipeline's output exactly)" required>
+            <input type="email" id="contactEmail" placeholder="Email (optional)">
+            <input type="text" id="contactTelegram" placeholder="Telegram chat_id (optional)">
+            <input type="tel" id="contactPhone" placeholder="WhatsApp phone, E.164 (optional)">
+            <button type="submit" class="btn-primary btn-small">+ Save Contact</button>
+          </form>
+
+          <div class="table-responsive">
+            <table class="tracker-table" id="contactsTable">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Telegram</th>
+                  <th>WhatsApp Phone</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="contactsTableBody">
+                <tr class="empty-row">
+                  <td colspan="5">No contacts yet. Add one above.</td>
                 </tr>
               </tbody>
             </table>
@@ -158,7 +207,7 @@
 
     <!-- Footer -->
     <footer class="app-footer">
-      <p>Simulating a 4-agent team: Extraction, Assignment, QA (Self-Checking Loop up to 3x), and Report Agent.</p>
+      <p>4-agent team: Extraction, Assignment, QA (self-checking loop up to 3x), and Report Agent — real Claude API calls when the AI integration above is green, otherwise the pipeline can't run.</p>
     </footer>
   </div>
 

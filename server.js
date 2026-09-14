@@ -5,6 +5,7 @@ const { fork } = require('child_process');
 
 const { initDatabase } = require('./src/db/database');
 const reminderRoutes = require('./src/routes/reminderRoutes');
+const contactRoutes = require('./src/routes/contactRoutes');
 const { callMcpTool, MCP_SERVER_URL } = require('./src/utils/mcpClient');
 const { startScheduler } = require('./src/services/schedulerService');
 const reminderService = require('./src/services/reminderService');
@@ -23,6 +24,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Mount Automated Reminder Management System Routes
 app.use('/api/reminders', reminderRoutes);
+app.use('/api/contacts', contactRoutes);
 
 // Sample emails for instant live demo testing (Real-world project & account sync samples)
 const SAMPLE_EMAILS = {
@@ -58,6 +60,32 @@ Team - following up on system updates:
 
 app.get('/api/samples', (req, res) => {
   res.json(SAMPLE_EMAILS);
+});
+
+// System Status Endpoint — which integrations are actually configured,
+// so the UI can show what's live vs. what still needs a credential added.
+app.get('/api/system-status', (req, res) => {
+  res.json({
+    email: {
+      configured: !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD),
+      channel: 'Email (SMTP/IMAP)'
+    },
+    telegram: {
+      configured: !!process.env.TELEGRAM_BOT_TOKEN,
+      channel: 'Telegram Bot'
+    },
+    whatsapp: {
+      configured: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN),
+      templateConfigured: !!process.env.TWILIO_WHATSAPP_TEMPLATE_SID,
+      channel: 'WhatsApp (Twilio)',
+      note: 'Configured but not used for automatic escalation — WhatsApp bills per business-initiated message even in sandbox mode. Telegram is the active free escalation channel.'
+    },
+    ai: {
+      configured: !!process.env.ANTHROPIC_API_KEY,
+      channel: 'Claude (Anthropic API)',
+      note: 'Without this, the agent pipeline cannot run at all — every step (extraction, assignment, QA, report) calls the Claude API.'
+    }
+  });
 });
 
 // MCP Status Endpoint

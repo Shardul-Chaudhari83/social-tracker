@@ -37,9 +37,7 @@ const { runAgentPipeline } = require('../src/services/pipelineService');
 const { resolveDueDate } = require('../src/utils/deadlineResolver');
 const { lookupContact } = require('../src/services/ownerDirectoryService');
 const { ensureMcpServer } = require('../src/utils/ensureMcpServer');
-const { callMcpTool } = require('../src/utils/mcpClient');
-const { sendTelegramMessage } = require('../src/services/telegramService');
-const { sendWhatsappMessage } = require('../src/services/whatsappService');
+const { sendReminderNow } = require('../src/services/dispatchService');
 
 function askQuestion(rl, query) {
   return new Promise(resolve => rl.question(query, resolve));
@@ -64,60 +62,6 @@ async function promptForContact(rl, ownerName, taskTitle) {
     const phone = (await askQuestion(rl, '   Enter WhatsApp phone number (E.164, e.g. +15551234567): ')).trim();
     return phone ? { email: null, phone, telegram: null } : null;
   }
-  return null;
-}
-
-function buildReminderMessage(reminder) {
-  return [
-    `Hi ${reminder.recipient_name},`,
-    '',
-    `This is an automated reminder for:`,
-    '',
-    `"${reminder.task_title}"`,
-    reminder.task_details,
-    '',
-    `Due: ${reminder.due_at}`,
-    '',
-    '— Automated Reminder System'
-  ].join('\n');
-}
-
-/**
- * Sends a reminder immediately via whichever contact channel it has,
- * priority: email -> Telegram -> WhatsApp (same priority as the rest of
- * the system: email is the primary channel, the others are for when email
- * alone isn't available). Updates the reminder's status/log on success.
- * @returns {Promise<{channel: string, target: string}|null>} null if the
- *   reminder has no contact at all (nothing to send to)
- */
-async function sendReminderNow(reminder) {
-  if (reminder.contact_email) {
-    const subject = `Reminder: ${reminder.task_title}`;
-    const body = buildReminderMessage(reminder);
-    await callMcpTool('send_email', { to: reminder.contact_email, subject, body });
-    reminderService.updateReminderStatus(reminder.id, 'MESSAGED');
-    reminderService.logEscalationAction(reminder.id, 'EMAIL_SENT', { to: reminder.contact_email, subject });
-    return { channel: 'email', target: reminder.contact_email };
-  }
-
-  if (reminder.contact_telegram_chat_id) {
-    await sendTelegramMessage({ chatId: reminder.contact_telegram_chat_id, text: buildReminderMessage(reminder) });
-    reminderService.updateReminderStatus(reminder.id, 'MESSAGED');
-    reminderService.logEscalationAction(reminder.id, 'TELEGRAM_SENT', { chatId: reminder.contact_telegram_chat_id });
-    return { channel: 'telegram', target: reminder.contact_telegram_chat_id };
-  }
-
-  if (reminder.contact_phone) {
-    await sendWhatsappMessage({
-      to: reminder.contact_phone,
-      body: buildReminderMessage(reminder),
-      contentVariables: { 1: reminder.task_title, 2: new Date(reminder.due_at).toLocaleString() }
-    });
-    reminderService.updateReminderStatus(reminder.id, 'MESSAGED');
-    reminderService.logEscalationAction(reminder.id, 'WHATSAPP_SENT', { to: reminder.contact_phone });
-    return { channel: 'whatsapp', target: reminder.contact_phone };
-  }
-
   return null;
 }
 
@@ -232,4 +176,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, sendReminderNow, promptForContact, buildReminderMessage };
+module.exports = { main, promptForContact };

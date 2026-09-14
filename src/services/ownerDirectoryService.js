@@ -25,6 +25,10 @@ function loadDirectory() {
   }
 }
 
+function saveDirectory(directory) {
+  fs.writeFileSync(DIRECTORY_PATH, JSON.stringify(directory, null, 2) + '\n', 'utf8');
+}
+
 const EMPTY_CONTACT = { email: null, phone: null, telegram: null };
 
 /**
@@ -43,4 +47,48 @@ function lookupContact(ownerName) {
   return entry ? { ...EMPTY_CONTACT, ...entry } : EMPTY_CONTACT;
 }
 
-module.exports = { lookupContact, loadDirectory };
+/**
+ * Lists every contact in the directory as an array — easier for a
+ * frontend to render than the raw name-keyed object.
+ * @returns {Array<{name: string, email: string|null, phone: string|null, telegram: string|null}>}
+ */
+function listContacts() {
+  const directory = loadDirectory();
+  return Object.entries(directory).map(([name, contact]) => ({ name, ...EMPTY_CONTACT, ...contact }));
+}
+
+/**
+ * Creates or replaces a contact entry.
+ * @param {string} name - owner name/role, exactly as the agent pipeline would produce it
+ * @param {{email?: string|null, phone?: string|null, telegram?: string|null}} contact
+ * @returns {{name: string, email: string|null, phone: string|null, telegram: string|null}}
+ */
+function upsertContact(name, contact) {
+  if (!name || !name.trim()) {
+    throw new Error('name is required');
+  }
+  const trimmedName = name.trim();
+  const directory = loadDirectory();
+  directory[trimmedName] = {
+    email: contact.email ? contact.email.trim() : null,
+    phone: contact.phone ? contact.phone.trim() : null,
+    telegram: contact.telegram ? String(contact.telegram).trim() : null
+  };
+  saveDirectory(directory);
+  return { name: trimmedName, ...directory[trimmedName] };
+}
+
+/**
+ * Removes a contact entry.
+ * @param {string} name
+ * @returns {boolean} true if a contact was removed
+ */
+function deleteContact(name) {
+  const directory = loadDirectory();
+  if (!(name in directory)) return false;
+  delete directory[name];
+  saveDirectory(directory);
+  return true;
+}
+
+module.exports = { lookupContact, loadDirectory, listContacts, upsertContact, deleteContact };
