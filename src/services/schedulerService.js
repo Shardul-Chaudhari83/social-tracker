@@ -1,12 +1,12 @@
 const { callMcpTool } = require('../utils/mcpClient');
 const reminderService = require('./reminderService');
-const { sendWhatsappMessage } = require('./whatsappService');
+const { sendTelegramMessage } = require('./telegramService');
 
 // How often to poll for due reminders / inbox replies (default: 1 minute).
 const POLL_INTERVAL_MS = parseInt(process.env.REMINDER_POLL_INTERVAL_MS || '60000', 10);
 
 // How long an emailed reminder can go unanswered before escalating to
-// WhatsApp (default: 24 hours). Lower this for testing.
+// Telegram (default: 24 hours). Lower this for testing.
 const ESCALATION_TIMEOUT_MS = parseInt(process.env.REMINDER_ESCALATION_TIMEOUT_MS || String(24 * 60 * 60 * 1000), 10);
 
 let pollTimer = null;
@@ -93,24 +93,27 @@ async function checkForReplies() {
 
 /**
  * Finds MESSAGED reminders whose email has gone unanswered past
- * ESCALATION_TIMEOUT_MS and escalates them to WhatsApp. A reminder with no
- * contact_phone on file is moved to NEEDS_ESCALATION instead — visible in
- * the UI as needing a human to add a contact number or intervene manually.
- * (WhatsApp is outbound-only for now — there's no inbound webhook yet, so
- * a WhatsApp reply won't be auto-detected the way an email reply is.)
+ * ESCALATION_TIMEOUT_MS and escalates them to Telegram (free — no
+ * templates, no approval, no per-message cost, unlike WhatsApp's
+ * business-initiated-message billing). A reminder with no
+ * contact_telegram_chat_id on file is moved to NEEDS_ESCALATION instead —
+ * visible in the UI as needing a human to add a contact or intervene
+ * manually. (Telegram is outbound-only for now — there's no inbound
+ * webhook yet, so a Telegram reply won't be auto-detected the way an
+ * email reply is.)
  */
 async function checkForEscalations() {
   const cutoff = new Date(Date.now() - ESCALATION_TIMEOUT_MS).toISOString();
   const stale = reminderService.getStaleMessagedReminders(cutoff);
 
   for (const reminder of stale) {
-    if (!reminder.contact_phone) {
+    if (!reminder.contact_telegram_chat_id) {
       reminderService.updateReminderStatus(reminder.id, 'NEEDS_ESCALATION', { increment_escalation: true });
-      console.log(`[Scheduler] Reminder ${reminder.id} ("${reminder.task_title}") unanswered and has no contact_phone — flagged NEEDS_ESCALATION`);
+      console.log(`[Scheduler] Reminder ${reminder.id} ("${reminder.task_title}") unanswered and has no Telegram contact on file — flagged NEEDS_ESCALATION`);
       continue;
     }
 
-    const body = [
+    const text = [
       `Hi ${reminder.recipient_name}, following up on: "${reminder.task_title}"`,
       reminder.task_details,
       `Due: ${reminder.due_at}`,
@@ -118,12 +121,12 @@ async function checkForEscalations() {
     ].join('\n');
 
     try {
-      await sendWhatsappMessage({ to: reminder.contact_phone, body });
+      await sendTelegramMessage({ chatId: reminder.contact_telegram_chat_id, text });
       reminderService.updateReminderStatus(reminder.id, 'MESSAGED', { increment_escalation: true });
-      reminderService.logEscalationAction(reminder.id, 'WHATSAPP_SENT', { to: reminder.contact_phone });
-      console.log(`[Scheduler] Escalated reminder ${reminder.id} to WhatsApp -> ${reminder.contact_phone}`);
+      reminderService.logEscalationAction(reminder.id, 'TELEGRAM_SENT', { chatId: reminder.contact_telegram_chat_id });
+      console.log(`[Scheduler] Escalated reminder ${reminder.id} via Telegram -> ${reminder.contact_telegram_chat_id}`);
     } catch (err) {
-      console.error(`[Scheduler] Failed to escalate reminder ${reminder.id} to WhatsApp:`, err.message);
+      console.error(`[Scheduler] Failed to escalate reminder ${reminder.id} via Telegram:`, err.message);
     }
   }
 }

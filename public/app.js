@@ -19,15 +19,30 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnRefreshReminders = document.getElementById('btnRefreshReminders');
   const aiSummaryBanner = document.getElementById('aiSummaryBanner');
   const aiSummaryText = document.getElementById('aiSummaryText');
+  const btnUploadFile = document.getElementById('btnUploadFile');
+  const fileUploadInput = document.getElementById('fileUploadInput');
+  const contactForm = document.getElementById('contactForm');
+  const contactName = document.getElementById('contactName');
+  const contactEmail = document.getElementById('contactEmail');
+  const contactTelegram = document.getElementById('contactTelegram');
+  const contactPhone = document.getElementById('contactPhone');
+  const contactsTableBody = document.getElementById('contactsTableBody');
+  const contactCountBadge = document.getElementById('contactCountBadge');
 
   let samples = {};
 
   // Check MCP Server status
   checkMcpStatus();
 
+  // Which integrations are actually configured (email/Telegram/WhatsApp/AI)
+  checkSystemStatus();
+
   // Reminders dashboard
   loadReminders();
   btnRefreshReminders.addEventListener('click', loadReminders);
+
+  // Contact directory
+  loadContacts();
 
   async function loadReminders() {
     try {
@@ -41,7 +56,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderReminders(reminders) {
     if (!reminders || reminders.length === 0) {
-      remindersTableBody.innerHTML = '<tr class="empty-row"><td colspan="5">No reminders yet. Process an email above to schedule some.</td></tr>';
+      remindersTableBody.innerHTML = '<tr class="empty-row"><td colspan="6">No reminders yet. Process an email above to schedule some.</td></tr>';
       reminderCountBadge.textContent = '0 Active';
       return;
     }
@@ -55,7 +70,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const row = document.createElement('tr');
       const dueDate = new Date(r.due_at);
       const dueLabel = isNaN(dueDate.getTime()) ? r.due_at : dueDate.toLocaleString();
-      const contact = r.contact_email || r.contact_phone || 'No contact on file';
+      const hasContact = !!(r.contact_email || r.contact_telegram_chat_id || r.contact_phone);
+      const contact = r.contact_email || r.contact_telegram_chat_id || r.contact_phone || 'No contact on file';
+      const canSend = hasContact && !['RESOLVED', 'FAILED', 'SATISFIED'].includes(r.status);
 
       row.innerHTML = `
         <td><span class="owner-chip">${escapeHtml(r.recipient_name)}</span></td>
@@ -63,9 +80,141 @@ document.addEventListener('DOMContentLoaded', () => {
         <td>${escapeHtml(dueLabel)}</td>
         <td>${escapeHtml(contact)}</td>
         <td><span class="reminder-status-pill status-${r.status.toLowerCase()}">${escapeHtml(r.status)}</span></td>
+        <td class="actions-cell">
+          <button type="button" class="btn-secondary btn-tiny btn-send-now" data-id="${r.id}" ${canSend ? '' : 'disabled title="No contact on file, or already resolved"'}>Send Now</button>
+          <button type="button" class="btn-secondary btn-tiny btn-history" data-id="${r.id}">History</button>
+        </td>
       `;
       remindersTableBody.appendChild(row);
     });
+
+    remindersTableBody.querySelectorAll('.btn-send-now').forEach(btn => {
+      btn.addEventListener('click', () => sendReminderNowUI(btn.dataset.id, btn));
+    });
+    remindersTableBody.querySelectorAll('.btn-history').forEach(btn => {
+      btn.addEventListener('click', () => toggleHistory(btn.dataset.id, btn));
+    });
+  }
+
+  async function sendReminderNowUI(reminderId, buttonEl) {
+    buttonEl.disabled = true;
+    buttonEl.textContent = 'Sending...';
+    try {
+      const res = await fetch(`/api/reminders/${reminderId}/send-now`, { method: 'POST' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Send failed');
+      await loadReminders();
+    } catch (err) {
+      alert('Send failed: ' + err.message);
+      buttonEl.disabled = false;
+      buttonEl.textContent = 'Send Now';
+    }
+  }
+
+  async function toggleHistory(reminderId, buttonEl) {
+    const existingRow = document.getElementById(`history-row-${reminderId}`);
+    if (existingRow) {
+      existingRow.remove();
+      buttonEl.textContent = 'History';
+      return;
+    }
+
+    buttonEl.textContent = 'Loading...';
+    try {
+      const res = await fetch(`/api/reminders/${reminderId}`);
+      const data = await res.json();
+      const logs = (data.data && data.data.escalation_logs) || [];
+
+      const logsHtml = logs.length > 0
+        ? logs.map(l => `<div class="history-entry"><span class="history-time">${new Date(l.created_at).toLocaleString()}</span><span class="history-action">${escapeHtml(l.action_type)}</span></div>`).join('')
+        : '<div class="history-entry">No actions logged yet.</div>';
+
+      const row = document.createElement('tr');
+      row.id = `history-row-${reminderId}`;
+      row.className = 'history-row';
+      row.innerHTML = `<td colspan="6"><div class="history-panel">${logsHtml}</div></td>`;
+
+      buttonEl.closest('tr').after(row);
+      buttonEl.textContent = 'Hide';
+    } catch (err) {
+      buttonEl.textContent = 'History';
+      alert('Failed to load history: ' + err.message);
+    }
+  }
+
+  // Contact Directory
+  async function loadContacts() {
+    try {
+      const res = await fetch('/api/contacts');
+      const data = await res.json();
+      renderContacts(data.data || []);
+    } catch (err) {
+      console.error('Failed to load contacts:', err.message);
+    }
+  }
+
+  function renderContacts(contacts) {
+    contactCountBadge.textContent = `${contacts.length} Contact${contacts.length === 1 ? '' : 's'}`;
+
+    if (contacts.length === 0) {
+      contactsTableBody.innerHTML = '<tr class="empty-row"><td colspan="5">No contacts yet. Add one above.</td></tr>';
+      return;
+    }
+
+    contactsTableBody.innerHTML = '';
+    contacts.forEach(c => {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td><span class="owner-chip">${escapeHtml(c.name)}</span></td>
+        <td>${escapeHtml(c.email || '—')}</td>
+        <td>${escapeHtml(c.telegram || '—')}</td>
+        <td>${escapeHtml(c.phone || '—')}</td>
+        <td><button type="button" class="btn-secondary btn-tiny btn-delete-contact" data-name="${escapeHtml(c.name)}">Delete</button></td>
+      `;
+      contactsTableBody.appendChild(row);
+    });
+
+    contactsTableBody.querySelectorAll('.btn-delete-contact').forEach(btn => {
+      btn.addEventListener('click', () => deleteContact(btn.dataset.name));
+    });
+  }
+
+  contactForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = contactName.value.trim();
+    if (!name) return;
+
+    try {
+      const res = await fetch('/api/contacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          email: contactEmail.value.trim() || null,
+          telegram: contactTelegram.value.trim() || null,
+          phone: contactPhone.value.trim() || null
+        })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Failed to save contact');
+
+      contactForm.reset();
+      await loadContacts();
+    } catch (err) {
+      alert('Failed to save contact: ' + err.message);
+    }
+  });
+
+  async function deleteContact(name) {
+    if (!confirm(`Remove contact "${name}"?`)) return;
+    try {
+      const res = await fetch(`/api/contacts/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Failed to delete contact');
+      await loadContacts();
+    } catch (err) {
+      alert('Failed to delete contact: ' + err.message);
+    }
   }
 
   async function checkMcpStatus() {
@@ -84,6 +233,53 @@ document.addEventListener('DOMContentLoaded', () => {
       mcpText.textContent = 'MCP Connection Error';
     }
   }
+
+  // Shows which channels (email/Telegram/WhatsApp) and the AI pipeline
+  // are actually configured, so a viewer sees at a glance what's live.
+  async function checkSystemStatus() {
+    try {
+      const res = await fetch('/api/system-status');
+      const status = await res.json();
+
+      setIntegrationPill('pill-email', status.email.configured, status.email.channel);
+      setIntegrationPill('pill-telegram', status.telegram.configured, status.telegram.channel);
+      setIntegrationPill(
+        'pill-whatsapp',
+        status.whatsapp.configured && status.whatsapp.templateConfigured,
+        status.whatsapp.note
+      );
+      setIntegrationPill('pill-ai', status.ai.configured, status.ai.note);
+    } catch (err) {
+      console.error('Failed to load system status:', err.message);
+    }
+  }
+
+  function setIntegrationPill(id, isOn, title) {
+    const pill = document.getElementById(id);
+    if (!pill) return;
+    pill.classList.toggle('online', !!isOn);
+    if (title) pill.title = title;
+  }
+
+  // File upload — reads the file client-side and drops it straight into
+  // the same textarea the paste/MCP-fetch flows already use, so it goes
+  // through the identical pipeline with zero backend changes.
+  btnUploadFile.addEventListener('click', () => fileUploadInput.click());
+
+  fileUploadInput.addEventListener('change', () => {
+    const file = fileUploadInput.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      emailInput.value = reader.result;
+      appendLog('System', 'mcp-event', `Loaded file "${file.name}" (${file.size} bytes) into the input.`);
+      statusIndicator.textContent = 'File Loaded';
+    };
+    reader.onerror = () => alert('Failed to read file: ' + reader.error.message);
+    reader.readAsText(file);
+    fileUploadInput.value = ''; // allow re-selecting the same file later
+  });
 
   // Fetch real emails via MCP Protocol tool
   btnFetchMcp.addEventListener('click', async () => {

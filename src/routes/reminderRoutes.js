@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const reminderService = require('../services/reminderService');
+const { sendReminderNow } = require('../services/dispatchService');
 
 /**
  * POST /api/reminders
@@ -125,6 +126,43 @@ router.patch('/:id/status', (req, res) => {
   } catch (err) {
     const statusCode = err.message.includes('not found') ? 404 : 400;
     res.status(statusCode).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+/**
+ * POST /api/reminders/:id/send-now
+ * Manually sends a reminder immediately via whichever contact channel it
+ * has on file (email -> Telegram -> WhatsApp priority), instead of waiting
+ * for due_at or the scheduler's poll cycle.
+ */
+router.post('/:id/send-now', async (req, res) => {
+  try {
+    const reminder = reminderService.getReminderById(req.params.id);
+    if (!reminder) {
+      return res.status(404).json({
+        success: false,
+        error: `Reminder not found with ID: ${req.params.id}`
+      });
+    }
+
+    const result = await sendReminderNow(reminder);
+    if (!result) {
+      return res.status(400).json({
+        success: false,
+        error: 'Reminder has no contact on file (email, Telegram, or WhatsApp) — add one first.'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Sent via ${result.channel} to ${result.target}`,
+      data: reminderService.getReminderById(req.params.id)
+    });
+  } catch (err) {
+    res.status(500).json({
       success: false,
       error: err.message
     });
